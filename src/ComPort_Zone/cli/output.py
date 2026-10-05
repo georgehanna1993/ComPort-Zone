@@ -155,6 +155,8 @@ class CliOutput:
         if kind == "tx":
             data = fields.get("display") or fields.get("data") or ""
             return self._style(f"TX> {data}", fg="green")
+        if kind == "script":
+            return self._style(str(fields.get("message", "")), fg="magenta", italic=True)
         if kind == "expect":
             matched = fields.get("matched")
             pattern = fields.get("pattern", "")

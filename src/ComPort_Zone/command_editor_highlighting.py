@@ -56,7 +56,11 @@ class CommandFileHighlighter(QSyntaxHighlighter):
         for match in re.finditer(r"\{\{[^{}]*\}\}", text):
             self.setFormat(match.start(), match.end() - match.start(), self.parameter_format)
         line_number = self.currentBlock().blockNumber() + 1
-        for issue in self.sources.validation_issues(text, warn_unknown=self.warn_unknown):
+        for issue in self.sources.validation_issues(
+            text,
+            warn_unknown=self.warn_unknown,
+            validate_structure=False,
+        ):
             if issue.line_number == 1 and issue.start < len(text):
                 length = issue.length or max(1, len(text) - issue.start)
                 self.setFormat(issue.start, min(length, len(text) - issue.start), self.issue_format)

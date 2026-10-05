@@ -68,6 +68,72 @@ class ValidateTests(unittest.TestCase):
         result = self.runner.invoke(cli, ["validate", str(path)])
         self.assertEqual(result.exit_code, 0, msg=result.output)
 
+    def test_loop_block_validates_cleanly(self) -> None:
+        path = _write_file(self.tmp_path, """\
+            LOOP 3
+            SEND *IDN?
+            ENDLOOP
+        """)
+        result = self.runner.invoke(cli, ["validate", str(path)])
+        self.assertEqual(result.exit_code, 0, msg=result.output)
+
+    def test_unmatched_loop_is_reported(self) -> None:
+        path = _write_file(self.tmp_path, """\
+            LOOP FOREVER
+            SEND *IDN?
+        """)
+        result = self.runner.invoke(cli, ["validate", str(path)])
+        self.assertEqual(result.exit_code, 13, msg=result.output)
+        self.assertIn("matching ENDLOOP", result.output)
+
+    def test_condition_block_validates_cleanly(self) -> None:
+        path = _write_file(self.tmp_path, """\
+            IF {{MODE=FAST}} == FAST
+            SEND *IDN?
+            ELSE
+            WAIT 1
+            ENDIF
+        """)
+        result = self.runner.invoke(cli, ["validate", str(path)])
+        self.assertEqual(result.exit_code, 0, msg=result.output)
+
+    def test_unmatched_condition_is_reported(self) -> None:
+        path = _write_file(self.tmp_path, """\
+            IF 1 == 1
+            SEND *IDN?
+        """)
+        result = self.runner.invoke(cli, ["validate", str(path)])
+        self.assertEqual(result.exit_code, 13, msg=result.output)
+        self.assertIn("matching ENDIF", result.output)
+
+    def test_capture_regex_validates_cleanly(self) -> None:
+        path = _write_file(self.tmp_path, r"CAPTURE VOLTAGE REGEX VOLT:\s*([0-9.]+)" + "\n")
+        result = self.runner.invoke(cli, ["validate", str(path)])
+        self.assertEqual(result.exit_code, 0, msg=result.output)
+
+    def test_invalid_capture_regex_is_reported(self) -> None:
+        path = _write_file(self.tmp_path, "CAPTURE VALUE REGEX ([0-9]+\n")
+        result = self.runner.invoke(cli, ["validate", str(path)])
+        self.assertEqual(result.exit_code, 13, msg=result.output)
+        self.assertIn("CAPTURE", result.output)
+
+    def test_break_set_and_log_validate_cleanly(self) -> None:
+        path = _write_file(self.tmp_path, """\
+            SET MODE FAST
+            LOG Mode=$MODE
+            LOOP FOREVER
+            BREAK
+            ENDLOOP
+        """)
+        result = self.runner.invoke(cli, ["validate", str(path)])
+        self.assertEqual(result.exit_code, 0, msg=result.output)
+
+    def test_break_outside_loop_is_reported(self) -> None:
+        path = _write_file(self.tmp_path, "BREAK\n")
+        result = self.runner.invoke(cli, ["validate", str(path)])
+        self.assertEqual(result.exit_code, 13, msg=result.output)
+        self.assertIn("inside a LOOP", result.output)
+
     def test_json_output_lists_issues(self) -> None:
         path = _write_file(self.tmp_path, """\
             HEX 5

@@ -108,6 +108,12 @@ class EventTests(unittest.TestCase):
         self.assertIn("TX>", stdout.getvalue())
         self.assertIn("ping", stdout.getvalue())
 
+    def test_script_event_prints_only_the_message(self) -> None:
+        output, stdout, _ = _make_output()
+        output.event("script", message="Hello from script")
+        self.assertEqual(stdout.getvalue().strip(), "Hello from script")
+        self.assertNotIn("LOG", stdout.getvalue())
+
     def test_expect_event_renders_matched_marker(self) -> None:
         output, stdout, _ = _make_output()
         output.event("expect", pattern="OK", matched=True, after_ms=42)

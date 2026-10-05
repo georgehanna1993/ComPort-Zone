@@ -35,6 +35,53 @@ class CommandEditorCoreTests(unittest.TestCase):
         self.assertIn("@@wait", suggestions)
         self.assertIn("@@expect-timeout", suggestions)
 
+    def test_loop_blocks_validate_and_complete(self) -> None:
+        sources = CommandEditorSources()
+
+        self.assertEqual(sources.validation_issues("LOOP 3\nSEND *IDN?\nENDLOOP"), [])
+        self.assertIn("LOOP", sources.suggestions("", "LOO"))
+        self.assertIn("ENDLOOP", sources.suggestions("", "END"))
+        issues = sources.validation_issues("LOOP FOREVER\nSEND *IDN?")
+        self.assertTrue(any(issue.severity == "error" and "ENDLOOP" in issue.message for issue in issues))
+
+    def test_condition_blocks_validate_and_complete(self) -> None:
+        sources = CommandEditorSources()
+
+        self.assertEqual(
+            sources.validation_issues("IF {{MODE=FAST}} == FAST\nSEND *IDN?\nELSE\nWAIT 1\nENDIF"),
+            [],
+        )
+        self.assertIn("IF", sources.suggestions("", "IF"))
+        self.assertIn("ENDIF", sources.suggestions("", "ENDI"))
+        issues = sources.validation_issues("IF 1 == 1\nSEND *IDN?")
+        self.assertTrue(any(issue.severity == "error" and "ENDIF" in issue.message for issue in issues))
+
+    def test_capture_validates_and_completes(self) -> None:
+        sources = CommandEditorSources()
+
+        self.assertEqual(
+            sources.validation_issues(r"CAPTURE VOLTAGE REGEX VOLT:\s*([0-9.]+)"),
+            [],
+        )
+        self.assertIn("CAPTURE", sources.suggestions("", "CAP"))
+        issues = sources.validation_issues("CAPTURE VALUE REGEX ([0-9]+")
+        self.assertTrue(any(issue.severity == "error" for issue in issues))
+
+    def test_break_set_and_log_validate_and_complete(self) -> None:
+        sources = CommandEditorSources()
+
+        self.assertEqual(
+            sources.validation_issues(
+                "SET MODE FAST\nLOG Mode=$MODE\nLOOP FOREVER\nBREAK\nENDLOOP"
+            ),
+            [],
+        )
+        self.assertIn("BREAK", sources.suggestions("", "BRE"))
+        self.assertIn("SET", sources.suggestions("", "SET"))
+        self.assertIn("LOG", sources.suggestions("", "LOG"))
+        issues = sources.validation_issues("BREAK")
+        self.assertTrue(any(issue.severity == "error" and "LOOP" in issue.message for issue in issues))
+
     def test_sources_validate_and_suggest_without_qt_dependencies(self) -> None:
         sources = CommandEditorSources(
             history_commands=["MEAS:VOLT?"],

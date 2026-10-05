@@ -8,10 +8,13 @@ from ComPort_Zone.batch import (
     BatchRunner,
     batch_parameter_input_lines,
     find_batch_parameters,
+    evaluate_condition,
     parse_batch_line,
     parse_batch_script,
     parse_batch_template,
     parse_hex_payload,
+    resolve_runtime_step,
+    substitute_runtime_variables,
     substitute_batch_parameters,
 )
 from ComPort_Zone.serial_core import SerialEvent
@@ -39,6 +42,102 @@ class RecordingStopEvent:
 
 
 class BatchParserTests(unittest.TestCase):
+    def test_parse_batch_script_supports_break_set_and_log(self) -> None:
+        steps = parse_batch_script(
+            "SET MODE FAST\nLOG Mode=$MODE\nLOOP 2\nBREAK\nENDLOOP"
+        )
+
+        self.assertEqual(
+            [step.kind for step in steps],
+            ["set", "log", "loop", "break", "endloop"],
+        )
+        self.assertEqual(steps[0].payload, ("MODE", "FAST"))
+        self.assertEqual(steps[1].payload, "Mode=$MODE")
+
+    def test_break_must_be_inside_loop(self) -> None:
+        with self.assertRaises(BatchParseError) as context:
+            parse_batch_script("IF 1 == 1\nBREAK\nENDIF")
+
+        self.assertEqual(context.exception.line_number, 2)
+        self.assertIn("inside a LOOP", str(context.exception))
+
+    def test_break_set_and_log_reject_malformed_syntax(self) -> None:
+        for line in ("BREAK now", "SET NAME", "SET 1NAME value", "LOG"):
+            with self.subTest(line=line), self.assertRaises(BatchParseError):
+                parse_batch_script(line)
+
+    def test_parse_batch_script_supports_capture(self) -> None:
+        step = parse_batch_script(r"CAPTURE VOLTAGE REGEX VOLT:\s*([0-9.]+)\s+V")[0]
+
+        self.assertEqual(step.kind, "capture")
+        self.assertEqual(step.payload, ("VOLTAGE", r"VOLT:\s*([0-9.]+)\s+V"))
+
+    def test_parse_batch_script_rejects_invalid_capture_regex(self) -> None:
+        with self.assertRaises(BatchParseError):
+            parse_batch_script("CAPTURE VALUE REGEX ([0-9]+")
+
+    def test_runtime_variable_substitution_supports_escape_and_missing_error(self) -> None:
+        self.assertEqual(
+            substitute_runtime_variables("SET $VALUE $$LITERAL", {"VALUE": "12.5"}, 1),
+            "SET 12.5 $LITERAL",
+        )
+        with self.assertRaises(BatchParseError):
+            substitute_runtime_variables("SET $MISSING", {}, 4)
+
+    def test_capture_regex_is_revalidated_after_runtime_substitution(self) -> None:
+        step = parse_batch_line(r"CAPTURE SECOND REGEX $FIRST", 7)
+
+        with self.assertRaises(BatchParseError) as context:
+            resolve_runtime_step(step, {"FIRST": "("})
+
+        self.assertEqual(context.exception.line_number, 7)
+        self.assertIn("after variable substitution", str(context.exception))
+
+    def test_parse_batch_script_supports_condition_blocks(self) -> None:
+        steps = parse_batch_script("IF 12.5 > 10\nSEND high\nELSE\nSEND low\nENDIF")
+
+        self.assertEqual([step.kind for step in steps], ["if", "send", "else", "send", "endif"])
+        self.assertEqual(steps[0].payload, ("12.5", ">", "10"))
+
+    def test_condition_evaluator_supports_numeric_and_text_operators(self) -> None:
+        self.assertTrue(evaluate_condition("12.0", "==", "12"))
+        self.assertTrue(evaluate_condition("12.5", ">", "12"))
+        self.assertTrue(evaluate_condition('"DEVICE READY"', "CONTAINS", "READY"))
+        self.assertTrue(evaluate_condition("ERROR", "NOT CONTAINS", "READY"))
+        self.assertFalse(evaluate_condition("FAST", "==", "SLOW"))
+        with self.assertRaises(ValueError):
+            evaluate_condition("FAST", ">", "SLOW")
+
+    def test_parse_batch_script_rejects_unmatched_condition_markers(self) -> None:
+        for script, line_number in (("IF 1 == 1\nSEND ping", 1), ("SEND ping\nELSE", 2), ("ENDIF", 1)):
+            with self.assertRaises(BatchParseError) as context:
+                parse_batch_script(script)
+            self.assertEqual(context.exception.line_number, line_number)
+
+    def test_parse_batch_script_rejects_crossed_control_blocks(self) -> None:
+        with self.assertRaises(BatchParseError) as context:
+            parse_batch_script("LOOP 2\nIF 1 == 1\nENDLOOP\nENDIF")
+        self.assertEqual(context.exception.line_number, 3)
+        self.assertIn("currently open IF", str(context.exception))
+
+    def test_parse_batch_script_supports_finite_and_forever_loops(self) -> None:
+        steps = parse_batch_script("LOOP 3\nSEND ping\nENDLOOP\nLOOP FOREVER\nWAIT 1\nENDLOOP")
+
+        self.assertEqual([step.kind for step in steps], ["loop", "send", "endloop", "loop", "wait", "endloop"])
+        self.assertEqual(steps[0].payload, 3)
+        self.assertIsNone(steps[3].payload)
+
+    def test_parse_batch_script_rejects_unmatched_loop_markers(self) -> None:
+        for script, line_number in (("LOOP 2\nSEND ping", 1), ("SEND ping\nENDLOOP", 2)):
+            with self.assertRaises(BatchParseError) as context:
+                parse_batch_script(script)
+            self.assertEqual(context.exception.line_number, line_number)
+
+    def test_parse_batch_script_rejects_invalid_loop_count(self) -> None:
+        for script in ("LOOP 0\nENDLOOP", "LOOP many\nENDLOOP"):
+            with self.assertRaises(BatchParseError):
+                parse_batch_script(script)
+
     def test_parse_batch_script_supports_wait_send_hex_and_plain_lines(self) -> None:
         steps = parse_batch_script(
             "\n".join(
@@ -197,8 +296,9 @@ class BatchParserTests(unittest.TestCase):
         runner._run_steps(parse_batch_script("SEND *IDN?\nEXPECT ComPort Zone"))
 
         self.assertEqual(sent, ["*IDN?"])
-        messages = [output_events.get_nowait().message for _ in range(output_events.qsize())]
-        self.assertIn("EXPECT matched on line 2: ComPort Zone", messages)
+        events = [output_events.get_nowait() for _ in range(output_events.qsize())]
+        messages = [event.message for event in events]
+        self.assertFalse(any(message.startswith("EXPECT matched") for message in messages))
         self.assertIn("Batch run completed.", messages)
 
     def test_expect_ignores_control_panel_poll_rx(self) -> None:
@@ -426,6 +526,192 @@ class BatchParserTests(unittest.TestCase):
         finally:
             runner.stop(emit_message=False)
 
+    def test_finite_loop_repeats_enclosed_steps(self) -> None:
+        sent: list[str] = []
+        runner = BatchRunner(
+            emit_event=lambda event: None,
+            send_text=lambda text, **kw: sent.append(text),
+            send_bytes=lambda data, **kw: None,
+            connected_supplier=lambda: True,
+        )
+        runner._resume_event.set()
+
+        runner._run_steps(parse_batch_script("LOOP 3\nSEND ping\nENDLOOP"))
+
+        self.assertEqual(sent, ["ping", "ping", "ping"])
+
+    def test_nested_loops_repeat_independently(self) -> None:
+        sent: list[str] = []
+        runner = BatchRunner(
+            emit_event=lambda event: None,
+            send_text=lambda text, **kw: sent.append(text),
+            send_bytes=lambda data, **kw: None,
+            connected_supplier=lambda: True,
+        )
+        runner._resume_event.set()
+
+        runner._run_steps(parse_batch_script("LOOP 2\nLOOP 3\nSEND ping\nENDLOOP\nENDLOOP"))
+
+        self.assertEqual(sent, ["ping"] * 6)
+
+    def test_break_exits_only_the_innermost_loop(self) -> None:
+        sent: list[str] = []
+        runner = BatchRunner(
+            emit_event=lambda event: None,
+            send_text=lambda text, **kw: sent.append(text),
+            send_bytes=lambda data, **kw: None,
+            connected_supplier=lambda: True,
+        )
+        runner._resume_event.set()
+
+        runner._run_steps(
+            parse_batch_script(
+                "LOOP 2\n"
+                "SEND outer\n"
+                "LOOP FOREVER\nSEND inner\nBREAK\nSEND skipped\nENDLOOP\n"
+                "SEND after-inner\n"
+                "ENDLOOP"
+            )
+        )
+
+        self.assertEqual(sent, ["outer", "inner", "after-inner"] * 2)
+
+    def test_set_and_log_resolve_and_overwrite_runtime_variables(self) -> None:
+        sent: list[str] = []
+        events: list[SerialEvent] = []
+        runner = BatchRunner(
+            emit_event=events.append,
+            send_text=lambda text, **kw: sent.append(text),
+            send_bytes=lambda data, **kw: None,
+            connected_supplier=lambda: True,
+        )
+        runner._resume_event.set()
+
+        runner._run_steps(
+            parse_batch_script(
+                '@@wait 0\nSET MODE "SAFE MODE"\nLOG Selected $MODE\n'
+                'SET MODE FAST\nSEND MODE=$MODE'
+            )
+        )
+
+        self.assertEqual(sent, ["MODE=FAST"])
+        self.assertTrue(
+            any(event.kind == "script" and event.message == "Selected SAFE MODE" for event in events)
+        )
+        self.assertFalse(any(event.message.startswith("SET ") for event in events))
+        self.assertFalse(any(event.message.startswith("Setting @@") for event in events))
+
+    def test_parameterized_loop_count_is_resolved_before_execution(self) -> None:
+        sent: list[str] = []
+        runner = BatchRunner(
+            emit_event=lambda event: None,
+            send_text=lambda text, **kw: sent.append(text),
+            send_bytes=lambda data, **kw: None,
+            connected_supplier=lambda: True,
+        )
+        runner._resume_event.set()
+        values: dict[str, str] = {}
+
+        runner._run_template_steps(
+            parse_batch_template("LOOP {{COUNT=3}}\nSEND ping\nENDLOOP"),
+            lambda line, line_number: substitute_batch_parameters(
+                line, values, lambda *_: None, line_number
+            ),
+        )
+
+        self.assertEqual(sent, ["ping"] * 3)
+
+    def test_condition_executes_only_the_selected_branch(self) -> None:
+        sent: list[str] = []
+        runner = BatchRunner(
+            emit_event=lambda event: None,
+            send_text=lambda text, **kw: sent.append(text),
+            send_bytes=lambda data, **kw: None,
+            connected_supplier=lambda: True,
+        )
+        runner._resume_event.set()
+
+        runner._run_steps(
+            parse_batch_script(
+                "IF 15 > 12\nSEND high\nELSE\nSEND low\nENDIF\n"
+                "IF FAST == SLOW\nSEND wrong\nELSE\nSEND right\nENDIF"
+            )
+        )
+
+        self.assertEqual(sent, ["high", "right"])
+
+    def test_capture_joins_fragmented_rx_and_drives_condition_and_send(self) -> None:
+        sent: list[str] = []
+        rx_events: Queue = Queue()
+
+        def send_text(text: str, **kwargs) -> None:
+            sent.append(text)
+            if text == "MEASURE?":
+                rx_events.put_nowait(SerialEvent(kind="rx", message="VOLT: 13."))
+                rx_events.put_nowait(SerialEvent(kind="rx", message="7 V\r\n"))
+
+        runner = BatchRunner(
+            emit_event=lambda event: None,
+            send_text=send_text,
+            send_bytes=lambda data, **kw: None,
+            connected_supplier=lambda: True,
+        )
+        runner._resume_event.set()
+        runner._rx_event_queue = rx_events
+
+        runner._run_steps(
+            parse_batch_script(
+                "SEND MEASURE?\n"
+                r"CAPTURE VOLTAGE REGEX VOLT:\s*([0-9.]+)\s+V" "\n"
+                "IF $VOLTAGE > 12\nSEND OUTPUT:OFF\nELSE\nSEND OUTPUT:ON\nENDIF\n"
+                "SEND RECORDED=$VOLTAGE"
+            )
+        )
+
+        self.assertEqual(sent, ["MEASURE?", "OUTPUT:OFF", "RECORDED=13.7"])
+
+    def test_nested_condition_inside_loop_uses_parameter_value(self) -> None:
+        sent: list[str] = []
+        runner = BatchRunner(
+            emit_event=lambda event: None,
+            send_text=lambda text, **kw: sent.append(text),
+            send_bytes=lambda data, **kw: None,
+            connected_supplier=lambda: True,
+        )
+        runner._resume_event.set()
+        values: dict[str, str] = {}
+
+        runner._run_template_steps(
+            parse_batch_template(
+                "LOOP 2\nIF {{VOLTAGE=13.5}} >= 12\nSEND high\nELSE\nSEND low\nENDIF\nENDLOOP"
+            ),
+            lambda line, line_number: substitute_batch_parameters(
+                line, values, lambda *_: None, line_number
+            ),
+        )
+
+        self.assertEqual(sent, ["high", "high"])
+
+    def test_forever_loop_runs_until_stopped(self) -> None:
+        sent: list[str] = []
+
+        def send_text(text: str, **kwargs) -> None:
+            sent.append(text)
+            if len(sent) == 4:
+                runner._stop_event.set()
+
+        runner = BatchRunner(
+            emit_event=lambda event: None,
+            send_text=send_text,
+            send_bytes=lambda data, **kw: None,
+            connected_supplier=lambda: True,
+        )
+        runner._resume_event.set()
+
+        runner._run_steps(parse_batch_script("LOOP FOREVER\nSEND ping\nENDLOOP"))
+
+        self.assertEqual(sent, ["ping"] * 4)
+
     def test_paused_expect_does_not_timeout_until_resumed(self) -> None:
         output_events: Queue = Queue()
         rx_events: Queue = Queue()
@@ -447,7 +733,7 @@ class BatchParserTests(unittest.TestCase):
             self.assertTrue(runner.resume())
             self.assertTrue(wait_until(lambda: not runner.is_running))
             messages = [output_events.get_nowait().message for _ in range(output_events.qsize())]
-            self.assertIn("EXPECT matched on line 1: OK", messages)
+            self.assertFalse(any(message.startswith("EXPECT matched") for message in messages))
             self.assertIn("Batch run completed.", messages)
             self.assertFalse(any(message.startswith("EXPECT timed out") for message in messages))
         finally:

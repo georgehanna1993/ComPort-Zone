@@ -59,6 +59,7 @@ class ThemePalette:
     rx: str
     error: str
     status: str
+    script: str
     terminal_bg: str
     on_accent: str
     # Optional brand gradient for primary surfaces (connect button, status seg, tab
@@ -98,6 +99,7 @@ COMPORT_DARK = ThemePalette(
     rx="#4a9bff",
     error="#f0596b",
     status="#f3b13b",
+    script="#c792ea",
     terminal_bg="#0d1017",
     on_accent="#06131a",
     brand_gradient="#57d98a, #38c4c0, #4a9bff",
@@ -125,6 +127,7 @@ COMPORT_LIGHT = ThemePalette(
     rx="#2f74e0",
     error="#d83a52",
     status="#c47e08",
+    script="#7c3aed",
     terminal_bg="#ffffff",
     on_accent="#ffffff",
     brand_gradient="#1f9d57, #11968f, #2f74e0",
@@ -153,6 +156,7 @@ VS_CODE_DARK = ThemePalette(
     rx="#89d185",
     error="#f14c4c",
     status="#d7ba7d",
+    script="#c586c0",
     terminal_bg="#0c0c0c",
     on_accent="#ffffff",
 )
@@ -175,6 +179,7 @@ WINDOWS_TERMINAL = ThemePalette(
     rx="#b5cea8",
     error="#f44747",
     status="#dcdcaa",
+    script="#c586c0",
     terminal_bg="#0c0c0c",
     on_accent="#04222e",
 )
@@ -204,6 +209,7 @@ THEMES = {
         rx="#0f8a4b",
         error="#c2410c",
         status="#9a6700",
+        script="#7c3aed",
         terminal_bg="#ffffff",
         on_accent="#ffffff",
     ),
@@ -225,6 +231,7 @@ THEMES = {
         rx="#95d5b2",
         error="#ff7b72",
         status="#ffb703",
+        script="#d8a7ff",
         terminal_bg="#140d07",
         on_accent="#2a1a08",
     ),
