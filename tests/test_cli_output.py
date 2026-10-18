@@ -108,6 +108,12 @@ class EventTests(unittest.TestCase):
         self.assertIn("TX>", stdout.getvalue())
         self.assertIn("ping", stdout.getvalue())
 
+    def test_script_event_prints_only_the_message(self) -> None:
+        output, stdout, _ = _make_output()
+        output.event("script", message="Hello from script")
+        self.assertEqual(stdout.getvalue().strip(), "Hello from script")
+        self.assertNotIn("LOG", stdout.getvalue())
+
     def test_expect_event_renders_matched_marker(self) -> None:
         output, stdout, _ = _make_output()
         output.event("expect", pattern="OK", matched=True, after_ms=42)
@@ -115,6 +121,44 @@ class EventTests(unittest.TestCase):
         self.assertIn("matched", line)
         self.assertIn("OK", line)
         self.assertIn("42", line)
+
+    def test_capture_timeout_event_is_visible_in_plain_output(self) -> None:
+        output, stdout, _ = _make_output()
+        output.event(
+            "capture",
+            name="VALUE",
+            pattern="NEVER",
+            value="",
+            matched=False,
+            after_ms=5,
+        )
+        line = stdout.getvalue()
+        self.assertIn("capture:no-match", line)
+        self.assertIn("VALUE", line)
+        self.assertIn("NEVER", line)
+        self.assertIn("5", line)
+
+    def test_capture_event_preserves_structured_fields_in_json_output(self) -> None:
+        output, stdout, _ = _make_output(json_mode=True)
+        output.event(
+            "capture",
+            name="VALUE",
+            pattern="NEVER",
+            value="",
+            matched=False,
+            after_ms=5,
+            line_number=3,
+        )
+
+        payload = json.loads(stdout.getvalue())
+        self.assertEqual(payload["type"], "capture")
+        self.assertEqual(payload["name"], "VALUE")
+        self.assertEqual(payload["pattern"], "NEVER")
+        self.assertEqual(payload["value"], "")
+        self.assertFalse(payload["matched"])
+        self.assertEqual(payload["after_ms"], 5)
+        self.assertEqual(payload["line_number"], 3)
+        self.assertIn("ts", payload)
 
     def test_unknown_kind_in_plain_mode_is_dropped(self) -> None:
         # Drop silently rather than printing raw — JSON mode is the

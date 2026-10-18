@@ -115,6 +115,28 @@ SEND c
         self.assertEqual(outcome.expect_failures, 2)
         self.assertEqual([text for text, _ in fake.sent_text], ["a", "b", "c"])
 
+    def test_capture_timeout_continues_and_counts_response_failure(self) -> None:
+        fake = FakeSerialTransport()
+        events: list[tuple[str, dict]] = []
+
+        outcome = run_command_file(
+            fake,
+            _steps(
+                "@@on-error continue\n"
+                "CAPTURE VALUE REGEX NEVER\n"
+                "LOG done\n"
+                "SEND after\n"
+            ),
+            {},
+            on_event=lambda kind, fields: events.append((kind, dict(fields))),
+            expect_timeout_ms=5,
+        )
+
+        self.assertTrue(outcome.success)
+        self.assertEqual(outcome.expect_failures, 1)
+        self.assertEqual(fake.sent_text, [("after", None)])
+        self.assertTrue(any(kind == "script" and fields["message"] == "done" for kind, fields in events))
+
 
 class SettingsDirectiveTests(unittest.TestCase):
     def test_send_mode_hex_sends_bare_lines_as_bytes(self) -> None:
@@ -239,6 +261,254 @@ class WaitStepTests(unittest.TestCase):
         self.assertTrue(outcome.success)
         # Allow a small scheduling slop on the lower bound.
         self.assertGreaterEqual(elapsed, 0.060)
+
+
+class LoopStepTests(unittest.TestCase):
+    def test_finite_loop_repeats_enclosed_steps(self) -> None:
+        fake = FakeSerialTransport()
+
+        outcome = run_command_file(
+            fake,
+            _steps("LOOP 3\nSEND ping\nENDLOOP\n"),
+            {},
+            on_event=_no_events_sink,
+        )
+
+        self.assertTrue(outcome.success)
+        self.assertEqual(fake.sent_text, [("ping", None)] * 3)
+
+    def test_nested_loops_repeat_independently(self) -> None:
+        fake = FakeSerialTransport()
+
+        outcome = run_command_file(
+            fake,
+            _steps("LOOP 2\nLOOP 2\nSEND ping\nENDLOOP\nENDLOOP\n"),
+            {},
+            on_event=_no_events_sink,
+        )
+
+        self.assertTrue(outcome.success)
+        self.assertEqual(fake.sent_text, [("ping", None)] * 4)
+
+    def test_unmatched_loop_returns_parse_failure(self) -> None:
+        fake = FakeSerialTransport()
+
+        outcome = run_command_file(
+            fake,
+            _steps("LOOP 2\nSEND ping\n"),
+            {},
+            on_event=_no_events_sink,
+        )
+
+        self.assertFalse(outcome.success)
+        self.assertEqual(outcome.failure_kind, FAILURE_PARSE)
+        self.assertEqual(outcome.failure_line, 1)
+
+    def test_break_exits_only_innermost_loop(self) -> None:
+        fake = FakeSerialTransport()
+
+        outcome = run_command_file(
+            fake,
+            _steps(
+                "LOOP 2\nSEND outer\n"
+                "LOOP FOREVER\nSEND inner\nBREAK\nSEND skipped\nENDLOOP\n"
+                "SEND after-inner\nENDLOOP\n"
+            ),
+            {},
+            on_event=_no_events_sink,
+        )
+
+        self.assertTrue(outcome.success)
+        self.assertEqual(
+            fake.sent_text,
+            [("outer", None), ("inner", None), ("after-inner", None)] * 2,
+        )
+
+    def test_break_outside_loop_returns_parse_failure(self) -> None:
+        outcome = run_command_file(
+            FakeSerialTransport(),
+            _steps("BREAK\n"),
+            {},
+            on_event=_no_events_sink,
+        )
+
+        self.assertFalse(outcome.success)
+        self.assertEqual(outcome.failure_kind, FAILURE_PARSE)
+
+
+class SetAndLogStepTests(unittest.TestCase):
+    def test_set_drives_if_send_and_log_and_can_be_overwritten(self) -> None:
+        fake = FakeSerialTransport()
+        events: list[tuple[str, dict]] = []
+
+        outcome = run_command_file(
+            fake,
+            _steps(
+                'SET MODE "SAFE MODE"\n'
+                "LOG Selected $MODE\n"
+                'IF $MODE == "SAFE MODE"\nSEND safe\nENDIF\n'
+                "SET MODE FAST\nSEND mode=$MODE\n"
+            ),
+            {},
+            on_event=lambda kind, fields: events.append((kind, dict(fields))),
+        )
+
+        self.assertTrue(outcome.success)
+        self.assertEqual(fake.sent_text, [("safe", None), ("mode=FAST", None)])
+        script_messages = [fields.get("message") for kind, fields in events if kind == "script"]
+        status_messages = [fields.get("message") for kind, fields in events if kind == "status"]
+        self.assertIn("Selected SAFE MODE", script_messages)
+        self.assertFalse(any(str(message).startswith("SET ") for message in status_messages))
+
+
+class ConditionStepTests(unittest.TestCase):
+    def test_condition_selects_true_and_false_branches(self) -> None:
+        fake = FakeSerialTransport()
+
+        outcome = run_command_file(
+            fake,
+            _steps(
+                "IF {{VOLTAGE}} > 12\nSEND high\nELSE\nSEND low\nENDIF\n"
+                "IF {{MODE}} == FAST\nSEND fast\nELSE\nSEND slow\nENDIF\n"
+            ),
+            {"VOLTAGE": "13.5", "MODE": "SLOW"},
+            on_event=_no_events_sink,
+        )
+
+        self.assertTrue(outcome.success)
+        self.assertEqual(fake.sent_text, [("high", None), ("slow", None)])
+
+    def test_invalid_numeric_condition_returns_parse_failure(self) -> None:
+        fake = FakeSerialTransport()
+
+        outcome = run_command_file(
+            fake,
+            _steps("IF FAST > SLOW\nSEND wrong\nENDIF\n"),
+            {},
+            on_event=_no_events_sink,
+        )
+
+        self.assertFalse(outcome.success)
+        self.assertEqual(outcome.failure_kind, FAILURE_PARSE)
+        self.assertEqual(outcome.failure_line, 1)
+
+    def test_quoted_operator_text_selects_only_expected_branches(self) -> None:
+        fake = FakeSerialTransport()
+
+        outcome = run_command_file(
+            fake,
+            _steps(
+                'IF "A > B" == "A > B"\nSEND symbol\nELSE\nSEND wrong-symbol\nENDIF\n'
+                "IF 'X CONTAINS Y' == 'X CONTAINS Y'\nSEND word\nELSE\nSEND wrong-word\nENDIF\n"
+                'IF "ALPHA BETA" CONTAINS "BETA"\nSEND contains\nELSE\nSEND wrong-contains\nENDIF\n'
+                'IF "ALPHA BETA" NOT CONTAINS "GAMMA"\nSEND not-contains\nELSE\nSEND wrong-not-contains\nENDIF\n'
+            ),
+            {},
+            on_event=_no_events_sink,
+        )
+
+        self.assertTrue(outcome.success)
+        self.assertEqual(
+            fake.sent_text,
+            [
+                ("symbol", None),
+                ("word", None),
+                ("contains", None),
+                ("not-contains", None),
+            ],
+        )
+
+    def test_missing_if_variable_is_fatal_even_when_continuing(self) -> None:
+        fake = FakeSerialTransport()
+
+        outcome = run_command_file(
+            fake,
+            _steps(
+                "@@on-error continue\nIF $STATE == READY\nSEND START\nELSE\nSEND STOP\nENDIF\n"
+            ),
+            {},
+            on_event=_no_events_sink,
+        )
+
+        self.assertFalse(outcome.success)
+        self.assertEqual(outcome.failure_kind, FAILURE_PARSE)
+        self.assertEqual(fake.sent_text, [])
+
+    def test_failed_capture_then_missing_if_variable_is_fatal_when_continuing(self) -> None:
+        fake = FakeSerialTransport()
+
+        outcome = run_command_file(
+            fake,
+            _steps(
+                "@@on-error continue\nCAPTURE STATE REGEX READY\n"
+                "IF $STATE == READY\nSEND START\nENDIF\n"
+            ),
+            {},
+            on_event=_no_events_sink,
+            expect_timeout_ms=5,
+        )
+
+        self.assertFalse(outcome.success)
+        self.assertEqual(outcome.failure_kind, FAILURE_PARSE)
+        self.assertEqual(outcome.expect_failures, 1)
+        self.assertEqual(fake.sent_text, [])
+
+
+class CaptureStepTests(unittest.TestCase):
+    def test_capture_extracts_response_and_resolves_runtime_variable(self) -> None:
+        fake = FakeSerialTransport()
+        fake.queue_response(b"VOLT: 13.7 V\r\n")
+
+        outcome = run_command_file(
+            fake,
+            _steps(
+                "SEND MEASURE?\n"
+                r"CAPTURE VOLTAGE REGEX VOLT:\s*([0-9.]+)\s+V" "\n"
+                "IF $VOLTAGE > 12\nSEND OUTPUT:OFF\nELSE\nSEND OUTPUT:ON\nENDIF\n"
+                "SEND RECORDED=$VOLTAGE\n"
+            ),
+            {},
+            on_event=_no_events_sink,
+        )
+
+        self.assertTrue(outcome.success)
+        self.assertEqual(
+            fake.sent_text,
+            [("MEASURE?", None), ("OUTPUT:OFF", None), ("RECORDED=13.7", None)],
+        )
+
+    def test_capture_optional_unmatched_group_becomes_empty_text(self) -> None:
+        fake = FakeSerialTransport()
+        fake.queue_response(b"STATE:\r\n")
+
+        outcome = run_command_file(
+            fake,
+            _steps(
+                "SEND STATE?\n"
+                r"CAPTURE STATE REGEX STATE:(ON)?\r" "\n"
+                "SEND VALUE=[$STATE]\n"
+            ),
+            {},
+            on_event=_no_events_sink,
+        )
+
+        self.assertTrue(outcome.success)
+        self.assertEqual(fake.sent_text, [("STATE?", None), ("VALUE=[]", None)])
+
+    def test_capture_timeout_uses_expect_failure(self) -> None:
+        fake = FakeSerialTransport()
+
+        outcome = run_command_file(
+            fake,
+            _steps("CAPTURE VALUE REGEX ([0-9.]+)\n"),
+            {},
+            on_event=_no_events_sink,
+            expect_timeout_ms=5,
+        )
+
+        self.assertFalse(outcome.success)
+        self.assertEqual(outcome.failure_kind, FAILURE_EXPECT)
+        self.assertEqual(outcome.expect_failures, 1)
 
 
 if __name__ == "__main__":

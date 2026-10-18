@@ -3,11 +3,21 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 import re
 
-from .batch import SETTING_NAMES, BatchParseError, parse_batch_line, strip_c_style_comment
+from .batch import (
+    SETTING_NAMES,
+    BatchParseError,
+    parse_batch_line,
+    parse_batch_template,
+    strip_c_style_comment,
+    validate_control_blocks,
+)
 from .models import QuickCommand
 from .quick_actions import quick_group_name
 
-BATCH_KEYWORDS = ("SEND", "WAIT", "HEX", "EXPECT")
+BATCH_KEYWORDS = (
+    "SEND", "WAIT", "HEX", "EXPECT", "CAPTURE",
+    "LOOP", "ENDLOOP", "BREAK", "IF", "ELSE", "ENDIF", "SET", "LOG",
+)
 COMMENT_SNIPPETS = ("// ", "# ")
 # ``@@`` execution-setting directives offered as completions (e.g. "@@wait").
 SETTING_SNIPPETS = tuple(f"@@{name}" for name in SETTING_NAMES)
@@ -143,9 +153,30 @@ class CommandEditorSources:
             result.sort(key=lambda value: (0 if value.casefold().startswith(prefix_key) else 1, value.casefold()))
         return result[:200]
 
-    def validation_issues(self, text: str, *, warn_unknown: bool = True) -> list[CommandValidationIssue]:
+    def validation_issues(
+        self,
+        text: str,
+        *,
+        warn_unknown: bool = True,
+        validate_structure: bool = True,
+    ) -> list[CommandValidationIssue]:
         known_tokens = self.known_command_tokens()
         issues: list[CommandValidationIssue] = []
+        if validate_structure:
+            template = parse_batch_template(text)
+            try:
+                validate_control_blocks(template)
+            except BatchParseError as exc:
+                raw_line = text.splitlines()[exc.line_number - 1]
+                issues.append(
+                    CommandValidationIssue(
+                        exc.line_number,
+                        str(exc),
+                        0,
+                        len(raw_line),
+                        "error",
+                    )
+                )
         for line_number, raw_line in enumerate(text.splitlines(), start=1):
             stripped = strip_c_style_comment(raw_line)
             if not stripped or stripped.startswith("#"):
@@ -162,7 +193,8 @@ class CommandEditorSources:
                     )
                 )
             if has_parameter(stripped):
-                command_text = command_text_from_line(stripped)
+                token = command_token(stripped)
+                command_text = "" if token.upper() in BATCH_KEYWORDS else command_text_from_line(stripped)
             else:
                 try:
                     step = parse_batch_line(stripped, line_number)

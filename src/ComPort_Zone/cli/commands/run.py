@@ -121,6 +121,14 @@ def _format_event_for_log(kind: str, fields: dict[str, Any]) -> str | None:
     if kind == "expect":
         tag = "matched" if fields.get("matched") else "no-match"
         return f"[expect:{tag}] {fields.get('pattern', '')!r} after {fields.get('after_ms')} ms"
+    if kind == "capture":
+        tag = "matched" if fields.get("matched") else "no-match"
+        return (
+            f"[capture:{tag}] {fields.get('name', '')}={fields.get('value', '')!r} "
+            f"after {fields.get('after_ms')} ms"
+        )
+    if kind == "script":
+        return str(fields.get("message", ""))
     if kind == "status":
         return fields.get("message", "")
     if kind == "error":
@@ -199,8 +207,12 @@ def execute_run(
             output.event("tx", **fields)
         elif kind == "rx":
             output.event("rx", display=fields.get("data", ""), **fields)
-        elif kind == "expect":
+        elif kind == "expect" and not fields.get("matched"):
             output.event("expect", **fields)
+        elif kind == "capture" and not fields.get("matched"):
+            output.event("capture", **fields)
+        elif kind == "script":
+            output.event("script", **fields)
         elif kind == "status":
             output.status(fields.get("message", ""))
         elif kind == "error":
@@ -233,7 +245,7 @@ def execute_run(
     if outcome.success:
         output.status(
             f"Run complete: {outcome.steps_run} step(s), "
-            f"{outcome.expect_failures} EXPECT failure(s)."
+            f"{outcome.expect_failures} response failure(s) (EXPECT/CAPTURE)."
         )
         return
 
@@ -264,14 +276,14 @@ def execute_run(
     "--log",
     "log_path",
     type=click.Path(dir_okay=False, writable=True, path_type=Path),
-    help="Append rendered TX/RX/EXPECT lines to this file.",
+    help="Append rendered run events, including LOG messages, to this file.",
 )
 @click.option(
     "--stop-on-expect-fail/--continue-on-expect-fail",
     "stop_on_expect_fail",
     default=True,
     show_default=True,
-    help="Whether the run aborts on the first failed EXPECT.",
+    help="Whether the run aborts on the first failed EXPECT or CAPTURE.",
 )
 @click.option(
     "--expect-timeout",
@@ -280,7 +292,7 @@ def execute_run(
     default=1000,
     show_default=True,
     metavar="MS",
-    help="Default timeout applied to every EXPECT step.",
+    help="Default timeout applied to every EXPECT and CAPTURE step.",
 )
 @endpoint_flags
 @click.pass_context
@@ -294,7 +306,7 @@ def run_command(
     expect_timeout_ms: int,
     **endpoint_flag_values: Any,
 ) -> None:
-    """Execute a SEND/WAIT/HEX/EXPECT command file against a serial, TCP, or UDP endpoint."""
+    """Execute a script with CAPTURE, LOOP/BREAK, IF, SET, and LOG."""
     execute_run(
         ctx,
         file_path=file_path,

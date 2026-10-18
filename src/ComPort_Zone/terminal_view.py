@@ -163,7 +163,7 @@ class TerminalView:
     def _body_format(self, plan: TerminalRenderPlan, colors: Mapping[str, str]) -> tuple[str, bool]:
         role = plan.color_role
         body_color = colors.get(f"{role}_body", colors.get(role, colors.get("default", "#d4d4d4")))
-        return body_color, role == "status"
+        return body_color, role in {"status", "script"}
 
     def _leader_width(self, leader_runs: list[tuple]) -> float:
         if not leader_runs:

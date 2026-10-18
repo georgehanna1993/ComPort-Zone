@@ -44,7 +44,7 @@ Keep the commands you use most one click away. The left drawer carries four cura
 
 ### Command-file automation and a built-in editor
 
-Turn a manual sequence into a repeatable script. Command files run top to bottom and understand a small, readable DSL — `SEND`, `WAIT`, `HEX`, and `EXPECT` for response assertions, plus `{{parameters}}` you fill in at run time. Run them from a terminal tab, the drawer, or the CLI, with **Pause / Resume / Stop** controls and a status line.
+Turn a manual sequence into a repeatable script. Command files run top to bottom and understand a small, readable DSL — `SEND`, `WAIT`, `HEX`, `EXPECT`, response `CAPTURE`, variables with `SET`, messages with `LOG`, repeatable `LOOP` blocks with `BREAK`, and `IF` conditions, plus `{{parameters}}` you fill in at run time. Run them from a terminal tab, the drawer, or the CLI, with **Pause / Resume / Stop** controls and a status line.
 
 The integrated editor opens command files as workspace tabs with line numbers, syntax highlighting, autocomplete, optional unknown-command warnings, find-and-replace, and a one-click run bar that targets any connected session.
 
@@ -147,13 +147,62 @@ Plain-text command files (run from a terminal tab's **Run** button, the drawer, 
 SEND version                // same as a bare line
 WAIT 1000                   // pause 1000 ms before the next step
 EXPECT ComPort              // require matching RX text before continuing
+CAPTURE VOLTAGE REGEX VOLT:\s*([0-9.]+) // save the first regex group as $VOLTAGE
+SET LIMIT 12.5               // create or replace a runtime variable
+LOG Voltage is $VOLTAGE      // write a message to the run log
 HEX 55 AA 01 0D             // send raw bytes, no line ending
+LOOP 3                      // repeat the enclosed block three times
+    SEND STATUS?
+    WAIT 500
+ENDLOOP
+IF {{MODE=FAST}} == FAST   // select a branch from a parameter value
+    SEND FAST:COMMAND
+ELSE
+    SEND SAFE:COMMAND
+ENDIF
+LOOP FOREVER
+    SEND STATUS?
+    CAPTURE STATE REGEX STATE:(\w+)
+    IF $STATE == READY
+        BREAK                 // leave the innermost loop
+    ENDIF
+ENDLOOP
 ```
 
 - **`SEND <text>`** sends text with the active line ending; a bare line does the same.
 - **`WAIT <ms>`** pauses before the next step.
 - **`HEX <bytes>`** sends raw bytes with no line ending.
 - **`EXPECT <text>`** waits (up to one second, unless `@@expect-timeout` changes it) for RX text containing `<text>`; if it doesn't arrive, the run stops with an error. RX is still shown in the terminal, and matches can span multiple chunks.
+- **`CAPTURE <name> REGEX <pattern>`** waits for a regex match using the EXPECT timeout, stores its first capture group (or the full match when there is no group), and makes it available as `$name` to later text-bearing steps. Use `$$` for a literal dollar sign.
+- **`SET <name> <value>`** creates or replaces a case-sensitive runtime `$name`. Matching quotes around the whole value are removed.
+- **`LOG <message>`** writes a visible `MSG` entry after resolving runtime variables. The desktop renders it in italic script-message color without a `LOG:` prefix.
+- **`LOOP <count>` ... `ENDLOOP`** repeats the enclosed steps exactly `<count>` times. Loops may be nested.
+- **`LOOP FOREVER` ... `ENDLOOP`** repeats until you press **Stop** in the desktop app or interrupt the CLI with Ctrl+C. `LOOP INFINITE` is accepted as an alias.
+- **`BREAK`** immediately leaves the innermost enclosing loop. Using it outside a loop is a validation error.
+- **`IF <left> <operator> <right>` ... `ELSE` ... `ENDIF`** selects one branch. `ELSE` is optional, conditions may be nested, and condition blocks may appear inside loops.
+
+Successful scripting internals (`SET`, `WAIT`, control-flow markers, settings,
+and successful `EXPECT`/`CAPTURE`) stay out of the terminal transcript. Batch
+lifecycle messages and errors remain visible, while script `SEND`/`HEX` traffic
+and device replies retain the normal TX/RX presentation.
+
+Condition operators are `==`, `!=`, `<`, `<=`, `>`, `>=`, `CONTAINS`, and `NOT CONTAINS`. Relational operators require numbers; equality compares numerically when both values are numbers and otherwise compares case-sensitive text. Quote a literal that contains spaces:
+
+```text
+IF {{VOLTAGE=13.5}} >= 12
+    SEND HIGH:RANGE
+ENDIF
+
+IF "DEVICE READY" CONTAINS READY
+    SEND START
+ENDIF
+
+SEND MEAS:VOLT?
+CAPTURE VOLTAGE REGEX VOLT:\s*([0-9.]+)\s+V
+IF $VOLTAGE > 12
+    SEND OUTPUT:OFF
+ENDIF
+```
 
 ### Settings (`@@`)
 
@@ -167,7 +216,7 @@ HEX 55 AA 01 0D             // send raw bytes, no line ending
 ```
 
 - **`@@wait <ms>`** delays before every following command (`0` disables).
-- **`@@expect-timeout <ms>`** sets the timeout for following `EXPECT` steps.
+- **`@@expect-timeout <ms>`** sets the timeout for following `EXPECT` and `CAPTURE` steps.
 - **`@@on-error <stop|continue>`** aborts on a failed step (default `stop`) or logs it and keeps going.
 - **`@@send-mode <text|hex>`** interprets following bare/`SEND` lines as text (default) or raw hex bytes; `HEX`/`EXPECT`/`WAIT` are unaffected.
 
@@ -181,7 +230,7 @@ CURR {{CURR_VALUE=1.00}}       # pre-filled with 1.00
 HEX  {{WAKE_BYTES=55 AA 01 0D}}
 ```
 
-A value entered once is reused for every later occurrence in the same run. Parameters work in bare lines, `SEND`, `WAIT`, `HEX`, and `EXPECT`.
+A value entered once is reused for every later occurrence in the same run. Parameters work in bare lines, `SEND`, `WAIT`, `HEX`, `EXPECT`, `CAPTURE`, `SET`, `LOG`, loop counts such as `LOOP {{COUNT=3}}`, and conditions such as `IF {{LIMIT}} > 12`. Runtime `$NAME` values are separate, exist only for one run, and are produced by `CAPTURE` or `SET`.
 
 ## CLI reference
 

@@ -21,7 +21,8 @@ ComPort Zone is a PySide6 desktop app for working with serial COM-port devices, 
 - Integrated `TX> ` terminal prompt with text and hex send modes.
 - Timestamped terminal output, search, copy, conversion helpers, and logging.
 - Command-file editing, validation, syntax highlighting, autocomplete, find/replace, and execution.
-- Batch command files with `SEND`, `WAIT`, `EXPECT`, `HEX`, and parameter templates.
+- Batch command files with send/wait/response steps, LOOP/BREAK and IF control
+  flow, CAPTURE/SET runtime variables, LOG messages, and parameter templates.
 - Quick commands and quick files, shared between terminal and editor views.
 - Shared drawer collapsed state, selected page, and width across terminal and embedded editor tabs.
 - Import/export of quick actions through CSV.
@@ -337,6 +338,13 @@ sequenceDiagram
 Rules:
 
 - Command parsing/running belongs to `batch.py` and controller code.
+- Desktop and CLI runners share parser, validation, jump-map, condition, and
+  runtime-variable helpers. BREAK targets the innermost LOOP; SET and CAPTURE
+  write per-run variables consumed by later text-bearing steps.
+- LOG emits a dedicated script-message event. The terminal presents it as an
+  italic, theme-colored MSG row; it does not reuse SYS status presentation.
+  Successful internal directives stay silent, while batch lifecycle/errors and
+  ordinary TX/RX traffic keep their established presentation.
 - A terminal may have only one active command-file run. Starting another run while one is active is rejected.
 - Any disconnect pauses the active command-file run. Reconnect does not resume automatically; the user must click Resume after the endpoint is connected.
 - Command-file pause/resume is separate from RX-output pause/resume, which only buffers displayed RX events.

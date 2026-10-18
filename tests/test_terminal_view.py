@@ -16,6 +16,7 @@ COLORS = {
     "rx": "#8fe388",
     "tx": "#4fc1ff",
     "status": "#ffd166",
+    "script": "#c792ea",
     "error": "#ff6b6b",
     "default": "#d4d4d4",
 }
@@ -79,6 +80,31 @@ class TerminalViewTests(unittest.TestCase):
         )
 
         self.assertEqual(terminal.toPlainText(), "TX  SINK:CURR?\nRX  167.00\n")
+
+    def test_script_message_uses_msg_label_color_and_italic_text(self) -> None:
+        view, terminal, _ = self.make_view()
+
+        view.render_plan(
+            TerminalRenderPlan(
+                event=SerialEvent(kind="script", message="Hello"),
+                message="Hello",
+                direction="MSG",
+                color_role="script",
+                ensure_line_break=True,
+            ),
+            colors=COLORS,
+            timestamps_enabled=False,
+            search_visible=False,
+            search_text="",
+            search_highlight="#333333",
+        )
+
+        self.assertEqual(terminal.toPlainText(), "MSG Hello\n")
+        cursor = terminal.textCursor()
+        cursor.setPosition(4)
+        cursor.movePosition(QTextCursor.MoveOperation.Right, QTextCursor.MoveMode.KeepAnchor, 1)
+        self.assertEqual(cursor.charFormat().foreground().color().name(), COLORS["script"])
+        self.assertTrue(cursor.charFormat().fontItalic())
 
     def test_render_plan_streams_rx_hex_with_spaces_between_chunks(self) -> None:
         view, terminal, _ = self.make_view()

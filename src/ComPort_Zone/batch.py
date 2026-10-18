@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import re
+from decimal import Decimal, InvalidOperation
 from collections.abc import Callable
 from dataclasses import dataclass
 from pathlib import Path
@@ -11,6 +12,25 @@ from time import perf_counter
 from .serial_core import SerialEvent
 
 WAIT_PATTERN = re.compile(r"^WAIT\s+(\d+)$", re.IGNORECASE)
+LOOP_PATTERN = re.compile(r"^LOOP\s+(\d+|FOREVER|INFINITE)$", re.IGNORECASE)
+ENDLOOP_PATTERN = re.compile(r"^ENDLOOP$", re.IGNORECASE)
+CONDITION_OPERATOR_PATTERN = re.compile(
+    r"NOT\s+CONTAINS|CONTAINS|==|!=|<=|>=|<|>",
+    re.IGNORECASE,
+)
+ELSE_PATTERN = re.compile(r"^ELSE$", re.IGNORECASE)
+ENDIF_PATTERN = re.compile(r"^ENDIF$", re.IGNORECASE)
+CAPTURE_PATTERN = re.compile(
+    r"^CAPTURE\s+([A-Za-z_][A-Za-z0-9_]*)\s+REGEX\s+(.+)$",
+    re.IGNORECASE,
+)
+BREAK_PATTERN = re.compile(r"^BREAK$", re.IGNORECASE)
+SET_PATTERN = re.compile(
+    r"^SET\s+([A-Za-z_][A-Za-z0-9_]*)\s+(.+)$",
+    re.IGNORECASE,
+)
+LOG_PATTERN = re.compile(r"^LOG\s+(.+)$", re.IGNORECASE)
+RUNTIME_VARIABLE_PATTERN = re.compile(r"(?<!\$)\$([A-Za-z_][A-Za-z0-9_]*)")
 SEND_PATTERN = re.compile(r"^SEND\s+(.+)$", re.IGNORECASE)
 HEX_PATTERN = re.compile(r"^HEX\s+([0-9A-Fa-f\s]+)$", re.IGNORECASE)
 EXPECT_PATTERN = re.compile(r"^EXPECT\s+(.+)$", re.IGNORECASE)
@@ -128,7 +148,8 @@ SETTING_NAMES = tuple(KNOWN_SETTINGS)
 class BatchStep:
     kind: str
     # For a "setting" step the payload is a ``(name, parsed_value)`` tuple.
-    payload: str | bytes | int | tuple[str, object]
+    # A ``None`` loop payload means an intentionally unbounded loop.
+    payload: str | bytes | int | tuple[str, object] | None
     line_number: int
 
 
@@ -196,6 +217,36 @@ def _batch_command_lines(text: str) -> list[BatchTemplateStep]:
     return steps
 
 
+def _parse_condition_step(line: str, line_number: int) -> BatchStep:
+    expression = line[2:].strip()
+    quote: str | None = None
+    for index, character in enumerate(expression):
+        if quote is not None:
+            if character == quote:
+                quote = None
+            continue
+        if character in ("'", '"'):
+            quote = character
+            continue
+        if index == 0 or not expression[index - 1].isspace():
+            continue
+        operator_match = CONDITION_OPERATOR_PATTERN.match(expression, index)
+        if operator_match is None:
+            continue
+        operator_end = operator_match.end()
+        if operator_end >= len(expression) or not expression[operator_end].isspace():
+            continue
+        left = expression[:index].strip()
+        right = expression[operator_end:].strip()
+        if left and right:
+            operator = " ".join(operator_match.group(0).upper().split())
+            return BatchStep("if", (left, operator, right), line_number)
+    raise BatchParseError(
+        "IF requires two values and an operator: ==, !=, <, <=, >, >=, CONTAINS, or NOT CONTAINS.",
+        line_number,
+    )
+
+
 def parse_batch_line(line: str, line_number: int) -> BatchStep:
     stripped = line.strip()
     if not stripped:
@@ -215,6 +266,56 @@ def parse_batch_line(line: str, line_number: int) -> BatchStep:
     wait_match = WAIT_PATTERN.match(stripped)
     if wait_match:
         return BatchStep("wait", int(wait_match.group(1)), line_number)
+    loop_match = LOOP_PATTERN.match(stripped)
+    if loop_match:
+        count_text = loop_match.group(1)
+        if count_text.upper() in ("FOREVER", "INFINITE"):
+            return BatchStep("loop", None, line_number)
+        count = int(count_text)
+        if count < 1:
+            raise BatchParseError("LOOP count must be at least 1, or FOREVER.", line_number)
+        return BatchStep("loop", count, line_number)
+    if ENDLOOP_PATTERN.match(stripped):
+        return BatchStep("endloop", "", line_number)
+    if re.match(r"^LOOP\b", stripped, re.IGNORECASE):
+        raise BatchParseError("LOOP requires a positive whole-number count or FOREVER.", line_number)
+    if re.match(r"^ENDLOOP\b", stripped, re.IGNORECASE):
+        raise BatchParseError("ENDLOOP does not accept an argument.", line_number)
+    if re.match(r"^IF\b", stripped, re.IGNORECASE):
+        return _parse_condition_step(stripped, line_number)
+    if ELSE_PATTERN.match(stripped):
+        return BatchStep("else", "", line_number)
+    if ENDIF_PATTERN.match(stripped):
+        return BatchStep("endif", "", line_number)
+    if re.match(r"^ELSE\b", stripped, re.IGNORECASE):
+        raise BatchParseError("ELSE does not accept an argument.", line_number)
+    if re.match(r"^ENDIF\b", stripped, re.IGNORECASE):
+        raise BatchParseError("ENDIF does not accept an argument.", line_number)
+    capture_match = CAPTURE_PATTERN.match(stripped)
+    if capture_match:
+        name, pattern = capture_match.groups()
+        try:
+            re.compile(pattern)
+        except re.error as exc:
+            raise BatchParseError(f"Invalid CAPTURE regular expression: {exc}", line_number) from exc
+        return BatchStep("capture", (name, pattern), line_number)
+    if re.match(r"^CAPTURE\b", stripped, re.IGNORECASE):
+        raise BatchParseError("CAPTURE syntax is: CAPTURE NAME REGEX <pattern>.", line_number)
+    if BREAK_PATTERN.match(stripped):
+        return BatchStep("break", "", line_number)
+    if re.match(r"^BREAK\b", stripped, re.IGNORECASE):
+        raise BatchParseError("BREAK does not accept an argument.", line_number)
+    set_match = SET_PATTERN.match(stripped)
+    if set_match:
+        name, value = set_match.groups()
+        return BatchStep("set", (name, value), line_number)
+    if re.match(r"^SET\b", stripped, re.IGNORECASE):
+        raise BatchParseError("SET syntax is: SET NAME <value>.", line_number)
+    log_match = LOG_PATTERN.match(stripped)
+    if log_match:
+        return BatchStep("log", log_match.group(1), line_number)
+    if re.match(r"^LOG\b", stripped, re.IGNORECASE):
+        raise BatchParseError("LOG requires a message.", line_number)
     expect_match = EXPECT_PATTERN.match(stripped)
     if expect_match:
         expected = expect_match.group(1).strip()
@@ -235,11 +336,260 @@ def parse_batch_line(line: str, line_number: int) -> BatchStep:
 
 
 def parse_batch_script(text: str) -> list[BatchStep]:
-    return [parse_batch_line(step.line, step.line_number) for step in _batch_command_lines(text)]
+    steps = [parse_batch_line(step.line, step.line_number) for step in _batch_command_lines(text)]
+    validate_control_blocks(steps)
+    build_loop_jumps(steps)
+    build_break_jumps(steps)
+    build_condition_jumps(steps)
+    return steps
 
 
 def parse_batch_template(text: str) -> list[BatchTemplateStep]:
     return _batch_command_lines(text)
+
+
+def _template_step_kind(step: BatchTemplateStep) -> str:
+    token = step.line.split(maxsplit=1)[0].upper()
+    if token == "LOOP":
+        return "loop"
+    if token == "ENDLOOP":
+        return "endloop"
+    if token == "IF":
+        return "if"
+    if token == "ELSE":
+        return "else"
+    if token == "ENDIF":
+        return "endif"
+    if token == "BREAK":
+        return "break"
+    return ""
+
+
+def build_loop_jumps(
+    steps: list[BatchStep] | list[BatchTemplateStep],
+) -> dict[int, int]:
+    """Validate LOOP nesting and map each LOOP/ENDLOOP index to its partner."""
+    jumps: dict[int, int] = {}
+    stack: list[tuple[int, int]] = []
+    for index, step in enumerate(steps):
+        kind = step.kind if isinstance(step, BatchStep) else _template_step_kind(step)
+        if kind == "loop":
+            stack.append((index, step.line_number))
+        elif kind == "endloop":
+            if not stack:
+                raise BatchParseError("ENDLOOP has no matching LOOP.", step.line_number)
+            start_index, _ = stack.pop()
+            jumps[start_index] = index
+            jumps[index] = start_index
+    if stack:
+        _, line_number = stack[-1]
+        raise BatchParseError("LOOP has no matching ENDLOOP.", line_number)
+    return jumps
+
+
+def build_break_jumps(
+    steps: list[BatchStep] | list[BatchTemplateStep],
+) -> dict[int, tuple[int, int]]:
+    """Map each BREAK index to its innermost LOOP and ENDLOOP indexes."""
+    loop_jumps = build_loop_jumps(steps)
+    jumps: dict[int, tuple[int, int]] = {}
+    loop_stack: list[int] = []
+    for index, step in enumerate(steps):
+        kind = step.kind if isinstance(step, BatchStep) else _template_step_kind(step)
+        if kind == "loop":
+            loop_stack.append(index)
+        elif kind == "endloop":
+            loop_stack.pop()
+        elif kind == "break":
+            if not loop_stack:
+                raise BatchParseError("BREAK must be inside a LOOP block.", step.line_number)
+            loop_index = loop_stack[-1]
+            jumps[index] = (loop_index, loop_jumps[loop_index])
+    return jumps
+
+
+def validate_control_blocks(steps: list[BatchStep] | list[BatchTemplateStep]) -> None:
+    """Require LOOP and IF blocks to be correctly and non-crossingly nested."""
+    stack: list[tuple[str, int, bool]] = []
+    for step in steps:
+        kind = step.kind if isinstance(step, BatchStep) else _template_step_kind(step)
+        if kind in ("loop", "if"):
+            stack.append((kind, step.line_number, False))
+            continue
+        if kind == "break":
+            if not any(open_kind == "loop" for open_kind, _, _ in stack):
+                raise BatchParseError("BREAK must be inside a LOOP block.", step.line_number)
+            continue
+        if kind == "else":
+            if not stack or stack[-1][0] != "if":
+                raise BatchParseError("ELSE must be inside the currently open IF block.", step.line_number)
+            _, line_number, seen_else = stack[-1]
+            if seen_else:
+                raise BatchParseError("IF block cannot contain more than one ELSE.", step.line_number)
+            stack[-1] = ("if", line_number, True)
+            continue
+        if kind not in ("endloop", "endif"):
+            continue
+        expected = "loop" if kind == "endloop" else "if"
+        marker = "ENDLOOP" if kind == "endloop" else "ENDIF"
+        opener = "LOOP" if expected == "loop" else "IF"
+        if not stack:
+            raise BatchParseError(f"{marker} has no matching {opener}.", step.line_number)
+        if stack[-1][0] != expected:
+            open_name = "LOOP" if stack[-1][0] == "loop" else "IF"
+            raise BatchParseError(
+                f"{marker} cannot close the currently open {open_name} block.",
+                step.line_number,
+            )
+        stack.pop()
+    if stack:
+        kind, line_number, _ = stack[-1]
+        opener = "LOOP" if kind == "loop" else "IF"
+        closer = "ENDLOOP" if kind == "loop" else "ENDIF"
+        raise BatchParseError(f"{opener} has no matching {closer}.", line_number)
+
+
+def build_condition_jumps(
+    steps: list[BatchStep] | list[BatchTemplateStep],
+) -> tuple[dict[int, tuple[int | None, int]], dict[int, int]]:
+    """Validate IF nesting and return IF targets plus ELSE-to-ENDIF jumps."""
+    if_jumps: dict[int, tuple[int | None, int]] = {}
+    else_jumps: dict[int, int] = {}
+    stack: list[tuple[int, int, int | None]] = []
+    for index, step in enumerate(steps):
+        kind = step.kind if isinstance(step, BatchStep) else _template_step_kind(step)
+        if kind == "if":
+            stack.append((index, step.line_number, None))
+        elif kind == "else":
+            if not stack:
+                raise BatchParseError("ELSE has no matching IF.", step.line_number)
+            if_index, line_number, else_index = stack[-1]
+            if else_index is not None:
+                raise BatchParseError("IF block cannot contain more than one ELSE.", step.line_number)
+            stack[-1] = (if_index, line_number, index)
+        elif kind == "endif":
+            if not stack:
+                raise BatchParseError("ENDIF has no matching IF.", step.line_number)
+            if_index, _, else_index = stack.pop()
+            if_jumps[if_index] = (else_index, index)
+            if else_index is not None:
+                else_jumps[else_index] = index
+    if stack:
+        _, line_number, _ = stack[-1]
+        raise BatchParseError("IF has no matching ENDIF.", line_number)
+    return if_jumps, else_jumps
+
+
+def _unquote_condition_value(value: str) -> str:
+    value = value.strip()
+    if len(value) >= 2 and value[0] == value[-1] and value[0] in ("'", '"'):
+        return value[1:-1]
+    return value
+
+
+def evaluate_condition(left: str, operator: str, right: str) -> bool:
+    """Evaluate a resolved IF expression without executing arbitrary code."""
+    left_value = _unquote_condition_value(left)
+    right_value = _unquote_condition_value(right)
+    operator = " ".join(operator.upper().split())
+    if operator == "CONTAINS":
+        return right_value in left_value
+    if operator == "NOT CONTAINS":
+        return right_value not in left_value
+    if operator in ("==", "!="):
+        try:
+            equal = Decimal(left_value) == Decimal(right_value)
+        except InvalidOperation:
+            equal = left_value == right_value
+        return equal if operator == "==" else not equal
+    try:
+        left_number = Decimal(left_value)
+        right_number = Decimal(right_value)
+    except InvalidOperation as exc:
+        raise ValueError(f"{operator} requires numeric values, got '{left_value}' and '{right_value}'.") from exc
+    return {
+        "<": left_number < right_number,
+        "<=": left_number <= right_number,
+        ">": left_number > right_number,
+        ">=": left_number >= right_number,
+    }[operator]
+
+
+def substitute_runtime_variables(
+    text: str,
+    variables: dict[str, str],
+    line_number: int,
+) -> str:
+    """Resolve ``$NAME`` values captured earlier in the current run.
+
+    ``$$`` escapes a literal dollar sign.
+    """
+    missing: list[str] = []
+
+    def replace(match: re.Match[str]) -> str:
+        name = match.group(1)
+        if name not in variables:
+            missing.append(name)
+            return match.group(0)
+        return variables[name]
+
+    resolved = RUNTIME_VARIABLE_PATTERN.sub(replace, text).replace("$$", "$")
+    if missing:
+        names = ", ".join(dict.fromkeys(missing))
+        raise BatchParseError(f"Runtime variable(s) not captured yet: {names}.", line_number)
+    return resolved
+
+
+def resolve_runtime_step(step: BatchStep, variables: dict[str, str]) -> BatchStep:
+    """Return a step with runtime variables resolved in text-bearing fields."""
+    if step.kind in ("send", "expect"):
+        return BatchStep(
+            step.kind,
+            substitute_runtime_variables(str(step.payload), variables, step.line_number),
+            step.line_number,
+        )
+    if step.kind == "if":
+        left, operator, right = step.payload
+        return BatchStep(
+            "if",
+            (
+                substitute_runtime_variables(str(left), variables, step.line_number),
+                operator,
+                substitute_runtime_variables(str(right), variables, step.line_number),
+            ),
+            step.line_number,
+        )
+    if step.kind == "capture":
+        name, pattern = step.payload
+        resolved_pattern = substitute_runtime_variables(
+            str(pattern), variables, step.line_number
+        )
+        try:
+            re.compile(resolved_pattern)
+        except re.error as exc:
+            raise BatchParseError(
+                f"Invalid CAPTURE regular expression after variable substitution: {exc}",
+                step.line_number,
+            ) from exc
+        return BatchStep(
+            "capture",
+            (name, resolved_pattern),
+            step.line_number,
+        )
+    if step.kind == "set":
+        name, value = step.payload
+        return BatchStep(
+            "set",
+            (name, substitute_runtime_variables(str(value), variables, step.line_number)),
+            step.line_number,
+        )
+    if step.kind == "log":
+        return BatchStep(
+            "log",
+            substitute_runtime_variables(str(step.payload), variables, step.line_number),
+            step.line_number,
+        )
+    return step
 
 
 def find_batch_parameters(text: str) -> list[BatchParameterOccurrence]:
@@ -357,6 +707,9 @@ class BatchRunner:
         return self._thread is not None and self._thread.is_alive()
 
     def start(self, steps: list[BatchStep]) -> None:
+        validate_control_blocks(steps)
+        build_loop_jumps(steps)
+        build_condition_jumps(steps)
         self.stop(emit_message=False)
         self._stop_event = Event()
         self._resume_event = Event()
@@ -374,6 +727,9 @@ class BatchRunner:
         self._thread.start()
 
     def start_template(self, steps: list[BatchTemplateStep], resolve_line: BatchLineResolver) -> None:
+        validate_control_blocks(steps)
+        build_loop_jumps(steps)
+        build_condition_jumps(steps)
         self.stop(emit_message=False)
         self._stop_event = Event()
         self._resume_event = Event()
@@ -528,13 +884,72 @@ class BatchRunner:
             return
         settings = self._new_run_settings()
         completed = True
-        for step in steps:
-            if self._stop_event.is_set():
+        loop_jumps = build_loop_jumps(steps)
+        break_jumps = build_break_jumps(steps)
+        condition_jumps, else_jumps = build_condition_jumps(steps)
+        loop_remaining: dict[int, int | None] = {}
+        runtime_variables: dict[str, str] = {}
+        index = 0
+        while index < len(steps):
+            if not self._wait_for_connection():
                 completed = False
                 break
-            if not self._run_step(step, settings) and self._step_failed_should_abort(settings):
+            step = steps[index]
+            try:
+                step = resolve_runtime_step(step, runtime_variables)
+            except BatchParseError as exc:
+                self._emit("error", str(exc))
+                if step.kind == "if" or self._step_failed_should_abort(settings):
+                    completed = False
+                    break
+                index += 1
+                continue
+            if step.kind == "loop":
+                loop_remaining[index] = step.payload if isinstance(step.payload, int) else None
+                index += 1
+                continue
+            if step.kind == "endloop":
+                loop_index = loop_jumps[index]
+                remaining = loop_remaining[loop_index]
+                if remaining is None:
+                    index = loop_index + 1
+                    continue
+                if remaining > 1:
+                    loop_remaining[loop_index] = remaining - 1
+                    index = loop_index + 1
+                    continue
+                del loop_remaining[loop_index]
+                index += 1
+                continue
+            if step.kind == "break":
+                loop_index, endloop_index = break_jumps[index]
+                loop_remaining.pop(loop_index, None)
+                index = endloop_index + 1
+                continue
+            if step.kind == "if":
+                left, operator, right = step.payload
+                try:
+                    condition_met = evaluate_condition(str(left), str(operator), str(right))
+                except ValueError as exc:
+                    self._emit("error", f"Condition on line {step.line_number} failed: {exc}")
+                    completed = False
+                    break
+                if condition_met:
+                    index += 1
+                else:
+                    else_index, endif_index = condition_jumps[index]
+                    index = (else_index + 1) if else_index is not None else (endif_index + 1)
+                continue
+            if step.kind == "else":
+                index = else_jumps[index] + 1
+                continue
+            if step.kind == "endif":
+                index += 1
+                continue
+            if not self._run_step(step, settings, runtime_variables) and self._step_failed_should_abort(settings):
                 completed = False
                 break
+            index += 1
         if completed:
             self._emit("status", "Batch run completed.")
 
@@ -545,10 +960,17 @@ class BatchRunner:
             return
         settings = self._new_run_settings()
         completed = True
-        for template_step in steps:
-            if self._stop_event.is_set():
+        loop_jumps = build_loop_jumps(steps)
+        break_jumps = build_break_jumps(steps)
+        condition_jumps, else_jumps = build_condition_jumps(steps)
+        loop_remaining: dict[int, int | None] = {}
+        runtime_variables: dict[str, str] = {}
+        index = 0
+        while index < len(steps):
+            if not self._wait_for_connection():
                 completed = False
                 break
+            template_step = steps[index]
             try:
                 resolved_line = resolve_line(template_step.line, template_step.line_number)
                 if resolved_line is None:
@@ -564,20 +986,84 @@ class BatchRunner:
                 self._emit("error", f"Batch parameter on line {template_step.line_number} failed: {exc}")
                 completed = False
                 break
+            try:
+                step = resolve_runtime_step(step, runtime_variables)
+            except BatchParseError as exc:
+                self._emit("error", str(exc))
+                if step.kind == "if" or self._step_failed_should_abort(settings):
+                    completed = False
+                    break
+                index += 1
+                continue
             if self._stop_event.is_set():
                 completed = False
                 break
-            if not self._run_step(step, settings) and self._step_failed_should_abort(settings):
+            if step.kind == "loop":
+                loop_remaining[index] = step.payload if isinstance(step.payload, int) else None
+                index += 1
+                continue
+            if step.kind == "endloop":
+                loop_index = loop_jumps[index]
+                remaining = loop_remaining[loop_index]
+                if remaining is None:
+                    index = loop_index + 1
+                    continue
+                if remaining > 1:
+                    loop_remaining[loop_index] = remaining - 1
+                    index = loop_index + 1
+                    continue
+                del loop_remaining[loop_index]
+                index += 1
+                continue
+            if step.kind == "break":
+                loop_index, endloop_index = break_jumps[index]
+                loop_remaining.pop(loop_index, None)
+                index = endloop_index + 1
+                continue
+            if step.kind == "if":
+                left, operator, right = step.payload
+                try:
+                    condition_met = evaluate_condition(str(left), str(operator), str(right))
+                except ValueError as exc:
+                    self._emit("error", f"Condition on line {step.line_number} failed: {exc}")
+                    completed = False
+                    break
+                if condition_met:
+                    index += 1
+                else:
+                    else_index, endif_index = condition_jumps[index]
+                    index = (else_index + 1) if else_index is not None else (endif_index + 1)
+                continue
+            if step.kind == "else":
+                index = else_jumps[index] + 1
+                continue
+            if step.kind == "endif":
+                index += 1
+                continue
+            if not self._run_step(step, settings, runtime_variables) and self._step_failed_should_abort(settings):
                 completed = False
                 break
+            index += 1
         if completed:
             self._emit("status", "Batch run completed.")
 
-    def _run_step(self, step: BatchStep, settings: RunSettings) -> bool:
+    def _run_step(
+        self,
+        step: BatchStep,
+        settings: RunSettings,
+        runtime_variables: dict[str, str],
+    ) -> bool:
+        if step.kind == "set":
+            name, value = step.payload
+            stored_value = _unquote_condition_value(str(value))
+            runtime_variables[str(name)] = stored_value
+            return True
+        if step.kind == "log":
+            self._emit("script", str(step.payload))
+            return True
         if step.kind == "setting":
             name, value = step.payload
             settings.apply(name, value)
-            self._emit("status", f"Setting @@{name} = {value}.")
             return True
         if step.kind == "wait":
             return self._sleep_interruptible(step.payload / 1000)
@@ -585,6 +1071,17 @@ class BatchRunner:
             if not self._wait_for_connection():
                 return False
             return self._expect_text(str(step.payload), step.line_number, settings.expect_timeout_ms)
+        if step.kind == "capture":
+            if not self._wait_for_connection():
+                return False
+            name, pattern = step.payload
+            return self._capture_regex(
+                str(name),
+                str(pattern),
+                step.line_number,
+                settings.expect_timeout_ms,
+                runtime_variables,
+            )
         if not self._wait_for_connection():
             return False
         # Persistent inter-command delay (@@wait) applies before each send/hex.
@@ -611,7 +1108,6 @@ class BatchRunner:
 
     def _expect_text(self, expected: str, line_number: int, timeout_ms: int) -> bool:
         if self._expected_text_available(expected):
-            self._emit("status", f"EXPECT matched on line {line_number}: {expected}")
             return True
         queue = self._rx_event_queue
         if queue is None:
@@ -641,7 +1137,64 @@ class BatchRunner:
             if event.kind == "rx" and getattr(event, "source", "") != CONTROL_PANEL_RX_SOURCE:
                 self._rx_buffer += event.message
                 if self._expected_text_available(expected):
-                    self._emit("status", f"EXPECT matched on line {line_number}: {expected}")
+                    return True
+        return False
+
+    def _capture_regex(
+        self,
+        name: str,
+        pattern: str,
+        line_number: int,
+        timeout_ms: int,
+        runtime_variables: dict[str, str],
+    ) -> bool:
+        try:
+            compiled = re.compile(pattern)
+        except re.error as exc:
+            self._emit("error", f"CAPTURE regex on line {line_number} is invalid: {exc}")
+            return False
+
+        def capture_available() -> tuple[bool, str]:
+            match = compiled.search(self._rx_buffer)
+            if match is None:
+                return False, ""
+            value = match.group(1) if compiled.groups else match.group(0)
+            if value is None:
+                value = ""
+            self._rx_buffer = self._rx_buffer[match.end():]
+            return True, value
+
+        matched, value = capture_available()
+        if matched:
+            runtime_variables[name] = value
+            return True
+        queue = self._rx_event_queue
+        if queue is None:
+            self._emit("error", "CAPTURE is not available because RX events are not connected to the batch runner.")
+            return False
+        remaining_timeout = timeout_ms / 1000
+        while not self._stop_event.is_set():
+            if not self._wait_for_connection():
+                return False
+            if remaining_timeout <= 0:
+                self._emit(
+                    "error",
+                    f"CAPTURE timed out on line {line_number} after {timeout_ms} ms: {pattern}",
+                )
+                return False
+            wait_time = min(remaining_timeout, 0.05)
+            started_wait = perf_counter()
+            try:
+                event = queue.get(timeout=wait_time)
+            except Empty:
+                remaining_timeout -= perf_counter() - started_wait
+                continue
+            remaining_timeout -= perf_counter() - started_wait
+            if event.kind == "rx" and getattr(event, "source", "") != CONTROL_PANEL_RX_SOURCE:
+                self._rx_buffer += event.message
+                matched, value = capture_available()
+                if matched:
+                    runtime_variables[name] = value
                     return True
         return False
 

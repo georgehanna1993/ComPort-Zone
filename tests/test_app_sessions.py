@@ -3022,6 +3022,7 @@ class AppSessionTests(unittest.TestCase):
             session = window.current_session()
             session._render_event(app_module.SerialEvent(kind="tx", message="status"))
             session._render_event(app_module.SerialEvent(kind="rx", message="OK\r\n", raw=b"OK\r\n"))
+            session._render_event(app_module.SerialEvent(kind="script", message="script note"))
             session._render_event(app_module.SerialEvent(kind="error", message="write failed"))
             window.settings.terminal_font_family = "Consolas"
             window.settings.terminal_font_size = 15
@@ -3044,7 +3045,16 @@ class AppSessionTests(unittest.TestCase):
 
             self.assertEqual(color_for("status"), mix_hex(window.theme.tx, window.theme.text, 0.58).lower())
             self.assertEqual(color_for("OK"), mix_hex(window.theme.rx, window.theme.text, 0.5).lower())
+            self.assertEqual(color_for("script note"), window.theme.script.lower())
             self.assertEqual(color_for("write failed"), window.theme.error.lower())
+            script_cursor = QTextCursor(session.terminal.document())
+            script_cursor.setPosition(display_text.index("script note"))
+            script_cursor.movePosition(
+                QTextCursor.MoveOperation.Right,
+                QTextCursor.MoveMode.KeepAnchor,
+                1,
+            )
+            self.assertTrue(script_cursor.charFormat().fontItalic())
         finally:
             app_module.default_config_path = old_config_path
             app_module.MainWindow.prompt_current_session_settings = old_prompt_current

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 import tempfile
 import unittest
 from pathlib import Path
@@ -159,6 +160,53 @@ class RunCommandFileTests(unittest.TestCase):
         # Both SENDs should have happened.
         sent = [text for text, _ in self.fake.sent_text]
         self.assertEqual(sent, ["step1", "step2"])
+
+    def test_continue_on_capture_timeout_reports_failure_and_keeps_running(self) -> None:
+        script = _write_file(self.tmp_path, "capture_timeout.txt", """\
+            @@expect-timeout 5
+            @@on-error continue
+            CAPTURE VALUE REGEX NEVER
+            LOG done
+            SEND after
+        """)
+        log_path = self.tmp_path / "capture_timeout.log"
+        with _patch_run_transport(self.fake):
+            result = self.runner.invoke(
+                cli,
+                ["run", str(script), "--port", "COM3", "--log", str(log_path)],
+            )
+
+        self.assertEqual(result.exit_code, 0, msg=result.output)
+        self.assertEqual(self.fake.sent_text, [("after", None)])
+        self.assertIn("capture:no-match", result.output)
+        self.assertIn("done", result.output)
+        self.assertIn("1 response failure(s) (EXPECT/CAPTURE)", result.output)
+        log = log_path.read_text(encoding="utf-8")
+        self.assertIn("[capture:no-match] VALUE='' after 5 ms", log)
+        self.assertIn("done", log)
+        self.assertIn("TX> after", log)
+
+    def test_capture_timeout_preserves_structured_json_event(self) -> None:
+        script = _write_file(self.tmp_path, "capture_timeout_json.txt", """\
+            @@expect-timeout 5
+            @@on-error continue
+            CAPTURE VALUE REGEX NEVER
+        """)
+        with _patch_run_transport(self.fake):
+            result = self.runner.invoke(
+                cli,
+                ["--json", "run", str(script), "--port", "COM3"],
+            )
+
+        self.assertEqual(result.exit_code, 0, msg=result.output)
+        events = [json.loads(line) for line in result.output.splitlines() if line.strip()]
+        capture = next(event for event in events if event.get("type") == "capture")
+        self.assertEqual(capture["name"], "VALUE")
+        self.assertEqual(capture["pattern"], "NEVER")
+        self.assertEqual(capture["value"], "")
+        self.assertFalse(capture["matched"])
+        self.assertEqual(capture["after_ms"], 5)
+        self.assertEqual(capture["line_number"], 3)
 
     def test_param_substitution_via_flag(self) -> None:
         script = _write_file(self.tmp_path, "param.txt", """\

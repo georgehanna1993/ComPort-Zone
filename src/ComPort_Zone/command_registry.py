@@ -310,7 +310,7 @@ COMMAND_SPECS: tuple[CommandSpec, ...] = (
         shortcut="Ctrl+R",
         icon=QStyle.StandardPixmap.SP_MediaPlay,
         palette_title="Run Command File",
-        palette_subtitle="Run a SEND / WAIT / HEX command script in the active tab",
+        palette_subtitle="Run a LOOP / BREAK / IF / SET / LOG script in the active tab",
         palette_keywords="script batch file",
     ),
     CommandSpec(

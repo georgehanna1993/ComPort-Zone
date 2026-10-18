@@ -20,6 +20,7 @@ from ...core.batch import (
     parse_batch_line,
     parse_batch_template,
     substitute_batch_parameters,
+    validate_control_blocks,
 )
 from ..exit_codes import ExitCode
 from ..output import CliOutput
@@ -65,7 +66,13 @@ def _silent_prompt(name: str, line_number: int, line_text: str) -> str | None:
 def _collect_issues(text: str) -> list[_Issue]:
     values = _build_substitution_values(text)
     issues: list[_Issue] = []
-    for template_step in parse_batch_template(text):
+    template = parse_batch_template(text)
+    try:
+        validate_control_blocks(template)
+    except BatchParseError as exc:
+        step = next(step for step in template if step.line_number == exc.line_number)
+        issues.append(_Issue(exc.line_number, step.line, str(exc)))
+    for template_step in template:
         try:
             resolved = substitute_batch_parameters(
                 template_step.line,

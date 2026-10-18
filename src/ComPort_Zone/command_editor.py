@@ -379,7 +379,7 @@ class CommandTextEdit(QTextEdit):
         """Description of the saved command on the caret's line, or '' if none.
 
         Reuses the command-file line parser so ``SEND *IDN?`` and a bare ``*IDN?``
-        both resolve, while directives (WAIT/EXPECT) and comments resolve to nothing.
+        both resolve, while scripting directives and comments resolve to nothing.
         Matching is case-insensitive to mirror SCPI's case-insensitive commands.
         """
         if not self._description_by_command:

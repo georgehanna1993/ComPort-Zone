@@ -1829,12 +1829,14 @@ class TerminalSessionWidget(QWidget):
             "rx": theme.rx,
             "tx": theme.tx,
             "status": timestamp,  # SYS leader is faint, like the mockup
+            "script": theme.script,
             "error": theme.error,
             "default": text,
             # message-body colours, softened toward the terminal ink
             "rx_body": mix_hex(theme.rx, text, 0.5),
             "tx_body": mix_hex(theme.tx, text, 0.58),
             "status_body": faint,
+            "script_body": theme.script,
             "error_body": theme.error,
             "default_body": text,
             # detached timestamp column

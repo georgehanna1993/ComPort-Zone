@@ -10,12 +10,13 @@ The CLI has different needs:
   translate into ``EXPECT_FAILED`` / ``PARSE_ERROR`` etc.
 
 This module reuses every parser from :mod:`ComPort_Zone.batch` and only
-re-implements the driving loop, keeping the SEND/HEX/WAIT/EXPECT
-semantics exactly aligned with the GUI.
+re-implements the driving loop, keeping the SEND/HEX/WAIT/EXPECT/CAPTURE,
+LOOP/BREAK, IF, SET, and LOG semantics exactly aligned with the GUI.
 """
 
 from __future__ import annotations
 
+import re
 import time
 from dataclasses import dataclass
 from queue import Empty
@@ -25,9 +26,15 @@ from ..core.batch import (
     BatchParseError,
     BatchTemplateStep,
     RunSettings,
+    build_break_jumps,
+    build_condition_jumps,
+    build_loop_jumps,
+    evaluate_condition,
     parse_batch_line,
     parse_hex_payload,
+    resolve_runtime_step,
     substitute_batch_parameters,
+    validate_control_blocks,
 )
 from ..core.serial_core import SerialEvent, decode_serial_bytes, format_hex_bytes
 from ..core.transports import TransportAdapter
@@ -151,6 +158,53 @@ def _wait_for_expect(
             return True, elapsed_ms
 
 
+def _wait_for_capture(
+    pattern: str,
+    *,
+    event_queue,
+    rx_buffer: bytearray,
+    timeout_ms: int,
+    on_event: EventSink,
+) -> tuple[bool, str, int]:
+    """Wait for a regex and return its first group (or full match)."""
+    try:
+        compiled = re.compile(pattern)
+    except re.error:
+        return False, "", 0
+    start = time.monotonic()
+    deadline = start + max(timeout_ms, 1) / 1000.0
+
+    def captured() -> tuple[bool, str]:
+        text = decode_serial_bytes(bytes(rx_buffer))
+        match = compiled.search(text)
+        if match is None:
+            return False, ""
+        value = match.group(1) if compiled.groups else match.group(0)
+        if value is None:
+            value = ""
+        consumed_text = text[: match.end()]
+        consumed_bytes = consumed_text.encode("utf-8", "replace")
+        del rx_buffer[: len(consumed_bytes)]
+        return True, value
+
+    matched, value = captured()
+    if matched:
+        return True, value, int((time.monotonic() - start) * 1000)
+    while True:
+        remaining = deadline - time.monotonic()
+        if remaining <= 0:
+            return False, "", timeout_ms
+        try:
+            event = event_queue.get(timeout=min(remaining, 0.1))
+        except Empty:
+            continue
+        _dispatch_event(event, rx_buffer, on_event)
+        if event.kind == "rx":
+            matched, value = captured()
+            if matched:
+                return True, value, int((time.monotonic() - start) * 1000)
+
+
 def run_command_file(
     transport: TransportAdapter,
     steps: list[BatchTemplateStep],
@@ -169,6 +223,19 @@ def run_command_file(
       - ``on_event`` routes events to whichever output sink fits
         (typically :class:`CliOutput`).
     """
+    try:
+        validate_control_blocks(steps)
+        loop_jumps = build_loop_jumps(steps)
+        break_jumps = build_break_jumps(steps)
+        condition_jumps, else_jumps = build_condition_jumps(steps)
+    except BatchParseError as exc:
+        return RunOutcome(
+            success=False,
+            failure_kind=FAILURE_PARSE,
+            failure_line=exc.line_number,
+            failure_message=str(exc),
+        )
+
     event_queue = transport.subscribe_monitor()
     rx_buffer = bytearray()
     expect_failures = 0
@@ -178,6 +245,8 @@ def run_command_file(
         expect_timeout_ms=max(expect_timeout_ms, 1),
         stop_on_error=stop_on_expect_fail,
     )
+    loop_remaining: dict[int, int | None] = {}
+    runtime_variables: dict[str, str] = {}
 
     def _missing_param_prompt(name: str, line_number: int, line_text: str) -> str | None:
         # Reaching this means the resolver couldn't find a value AND the
@@ -200,7 +269,11 @@ def run_command_file(
         return None
 
     try:
-        for template_step in steps:
+        index = 0
+        while index < len(steps):
+            step_index = index
+            template_step = steps[index]
+            index += 1
             try:
                 resolved_line = substitute_batch_parameters(
                     template_step.line,
@@ -240,6 +313,17 @@ def run_command_file(
                     steps_run=steps_run,
                     expect_failures=expect_failures,
                 )
+            try:
+                step = resolve_runtime_step(step, runtime_variables)
+            except BatchParseError as exc:
+                return RunOutcome(
+                    success=False,
+                    failure_kind=FAILURE_PARSE,
+                    failure_line=template_step.line_number,
+                    failure_message=str(exc),
+                    steps_run=steps_run,
+                    expect_failures=expect_failures,
+                )
 
             # Drain any pending RX before the new step so EXPECT buffers don't
             # leak across SEND boundaries.
@@ -247,10 +331,75 @@ def run_command_file(
 
             steps_run += 1
 
+            if step.kind == "loop":
+                loop_remaining[step_index] = step.payload if isinstance(step.payload, int) else None
+                continue
+
+            if step.kind == "endloop":
+                loop_index = loop_jumps[step_index]
+                remaining = loop_remaining[loop_index]
+                if remaining is None:
+                    index = loop_index + 1
+                elif remaining > 1:
+                    loop_remaining[loop_index] = remaining - 1
+                    index = loop_index + 1
+                else:
+                    del loop_remaining[loop_index]
+                continue
+
+            if step.kind == "break":
+                loop_index, endloop_index = break_jumps[step_index]
+                loop_remaining.pop(loop_index, None)
+                index = endloop_index + 1
+                continue
+
+            if step.kind == "if":
+                left, operator, right = step.payload
+                try:
+                    condition_met = evaluate_condition(str(left), str(operator), str(right))
+                except ValueError as exc:
+                    return RunOutcome(
+                        success=False,
+                        failure_kind=FAILURE_PARSE,
+                        failure_line=step.line_number,
+                        failure_message=f"Condition on line {step.line_number} failed: {exc}",
+                        steps_run=steps_run,
+                        expect_failures=expect_failures,
+                    )
+                if not condition_met:
+                    else_index, endif_index = condition_jumps[step_index]
+                    index = (else_index + 1) if else_index is not None else (endif_index + 1)
+                continue
+
+            if step.kind == "else":
+                index = else_jumps[step_index] + 1
+                continue
+
+            if step.kind == "endif":
+                continue
+
+            if step.kind == "set":
+                name, value = step.payload
+                stored_value = str(value)
+                if (
+                    len(stored_value) >= 2
+                    and stored_value[0] == stored_value[-1]
+                    and stored_value[0] in ("'", '"')
+                ):
+                    stored_value = stored_value[1:-1]
+                runtime_variables[str(name)] = stored_value
+                continue
+
+            if step.kind == "log":
+                on_event(
+                    "script",
+                    {"message": str(step.payload), "line_number": step.line_number},
+                )
+                continue
+
             if step.kind == "setting":
                 name, value = step.payload
                 settings.apply(name, value)
-                on_event("status", {"message": f"Setting @@{name} = {value}."})
                 continue
 
             if step.kind == "wait":
@@ -350,6 +499,44 @@ def run_command_file(
                             steps_run=steps_run,
                             expect_failures=expect_failures,
                         )
+                continue
+
+            if step.kind == "capture":
+                name, pattern = step.payload
+                matched, value, elapsed_ms = _wait_for_capture(
+                    str(pattern),
+                    event_queue=event_queue,
+                    rx_buffer=rx_buffer,
+                    timeout_ms=settings.expect_timeout_ms,
+                    on_event=on_event,
+                )
+                on_event(
+                    "capture",
+                    {
+                        "name": str(name),
+                        "pattern": str(pattern),
+                        "value": value,
+                        "matched": matched,
+                        "after_ms": elapsed_ms,
+                        "line_number": step.line_number,
+                    },
+                )
+                if matched:
+                    runtime_variables[str(name)] = value
+                    continue
+                expect_failures += 1
+                if settings.stop_on_error:
+                    return RunOutcome(
+                        success=False,
+                        failure_kind=FAILURE_EXPECT,
+                        failure_line=step.line_number,
+                        failure_message=(
+                            f"CAPTURE timed out on line {step.line_number} "
+                            f"after {settings.expect_timeout_ms} ms: {pattern}"
+                        ),
+                        steps_run=steps_run,
+                        expect_failures=expect_failures,
+                    )
                 continue
 
         # End of file — drain residual RX so trailing output isn't lost.

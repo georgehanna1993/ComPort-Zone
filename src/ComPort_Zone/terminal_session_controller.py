@@ -59,7 +59,7 @@ class TerminalRenderPlan:
     stream_text: bool = False
     ensure_line_break: bool = False
     stream_separator: str = ""
-    direction: str = ""  # mockup column label: TX / RX / SYS / ERR
+    direction: str = ""  # transcript column label: TX / RX / SYS / MSG / ERR
 
 
 class TerminalSessionController:
@@ -141,7 +141,7 @@ class TerminalSessionController:
             "status"
             if event.kind == "progress"
             else event.kind
-            if event.kind in {"rx", "tx", "status", "error"}
+            if event.kind in {"rx", "tx", "status", "script", "error"}
             else "default"
         )
         hex_rx_stream = event.kind == "rx" and receive_display_mode == "Hex"
@@ -155,6 +155,7 @@ class TerminalSessionController:
                 "rx": "",
                 "tx": "TX> ",
                 "status": "SYS ",
+                "script": "MSG ",
                 "error": "ERR ",
                 "progress": "SYS ",
             }.get(event.kind, ""),
@@ -162,6 +163,7 @@ class TerminalSessionController:
                 "rx": "RX",
                 "tx": "TX",
                 "status": "SYS",
+                "script": "MSG",
                 "error": "ERR",
                 "progress": "SYS",
             }.get(event.kind, ""),
