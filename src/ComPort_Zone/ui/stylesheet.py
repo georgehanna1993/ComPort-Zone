@@ -868,6 +868,11 @@ def build_stylesheet(theme: ThemePalette) -> str:
         padding: 1px 6px; min-height: 18px;
         font-family: {MONO};
     }}
+    /* Qt 6.12 clips the editor at x=0 when NoButtons inherits right-aligned
+       steppers. Center these unused subcontrols to keep the field visible;
+       NoButtons still prevents the steppers from being drawn or clicked. */
+    QDoubleSpinBox#tileSetpointSpin::up-button,
+    QDoubleSpinBox#tileSetpointSpin::down-button {{ subcontrol-position: center; }}
     QDoubleSpinBox#tileSetpointSpin:focus {{ border-color: {accent}; }}
     QDoubleSpinBox#tileSetpointSpin:disabled {{ color: {tx_faint}; }}
     /* Mismatch: the readback differs from the commanded value (the

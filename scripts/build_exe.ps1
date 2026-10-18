@@ -490,6 +490,15 @@ if (-not (Test-Path $ExePath)) {
     throw "Build completed, but the executable was not found: $ExePath"
 }
 
+Write-Step "Checking packaged Qt dependencies"
+# Qt 6.12 uses the Windows ICU API. PyInstaller can pick an unrelated
+# icuuc.dll from PATH instead of the OS DLL; its exports are incompatible.
+$BundledSystemIcu = Join-Path $DistBundlePath "_internal\icuuc.dll"
+if (Test-Path -LiteralPath $BundledSystemIcu) {
+    Remove-Item -LiteralPath $BundledSystemIcu -Force
+}
+Invoke-Checked $VenvPython @((Join-Path $ScriptDir "check_qt_bundle.py"), (Join-Path $DistBundlePath "_internal"))
+
 Write-Step "Preparing publish folder"
 Remove-DirectoryInsideRoot -Path $PublishDir
 New-Item -ItemType Directory -Force -Path $PublishDir, $PublishAppDir | Out-Null
