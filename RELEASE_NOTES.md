@@ -1,3 +1,30 @@
+# ComPort Zone v0.8.1 Release Notes
+
+Release date: 2026-10-18
+
+This patch restores visible numeric setpoint controls in Control Panels and improves Windows application startup.
+
+**Many thanks to George Hanna ([@georgehanna1993](https://github.com/georgehanna1993)) for his generous code donation of the command-file scripting features introduced in v0.8.0 and his work on their reliability. These capabilities remain part of v0.8.1 and bring more capable device automation to the whole ComPort Zone community!**
+
+## Fixed
+
+- **Numeric setpoints are visible again.** Control Panel setpoint fields no longer appear empty or shift their numbers out of view when using Qt 6.12. The fix applies across all themes and keeps the input usable as the window is resized and the panel is armed or updated by readbacks.
+- **More reliable Windows startup.** Windows packages avoid a conflicting dependency that could cause a `QtCore` DLL-load error at launch. Builds now check that the packaged Qt libraries load before creating the installer.
+
+## Upgrading
+
+Settings, Quick Commands, Quick Files, saved Control Panels, and command-file scripts are preserved; no migration is needed. All command-file scripting improvements from v0.8.0 remain available.
+
+## Downloads
+
+Choose `ComPort_Zone-0.8.1-win64-setup.exe` for installation, or `ComPort_Zone-0.8.1-win64.zip` for portable use. Both run on Windows without installing Python.
+
+## Validation
+
+All 1,516 automated tests passed in Windows CI on Python 3.12 with Qt 6.12. The numeric setpoint regression check covers all seven themes and window resizing. The packaged Qt dependency check rejects the earlier incompatible package and passes the rebuilt package.
+
+---
+
 # ComPort Zone v0.8.0 Release Notes
 
 Release date: 2026-10-18

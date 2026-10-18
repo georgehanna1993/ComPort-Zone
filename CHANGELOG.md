@@ -4,6 +4,21 @@ All notable changes to ComPort Zone are documented here.
 
 ## Unreleased
 
+## 0.8.1 - 2026-10-18
+
+### Fixed
+
+- **Numeric setpoints are visible again in Control Panels.** Qt 6.12 could collapse a setpoint's numeric editor to one pixel, making the tile appear empty or shifting the value out of view. The input now stays visible across themes, window resizing, arming, and readback updates.
+- **More reliable Windows startup.** Packaging avoids an incompatible ICU DLL that could cause a `QtCore` DLL-load error at launch, and checks that the bundled Qt libraries load before creating the installer.
+
+### Thanks
+
+- Many thanks to **George Hanna ([@georgehanna1993](https://github.com/georgehanna1993))** for his generous code donation of the command-file scripting features introduced in v0.8.0 and his work on their reliability. All of those capabilities remain available in v0.8.1.
+
+### Validation
+
+- All 1,516 automated tests passed in Windows CI on Python 3.12 with Qt 6.12. The setpoint regression check covers all seven themes, and the packaged Qt dependency check rejects the earlier incompatible package and passes the rebuilt package.
+
 ## 0.8.0 - 2026-10-18
 
 ### Added
