@@ -524,6 +524,7 @@ def run_command_file(
                 if matched:
                     runtime_variables[str(name)] = value
                     continue
+                expect_failures += 1
                 if settings.stop_on_error:
                     return RunOutcome(
                         success=False,

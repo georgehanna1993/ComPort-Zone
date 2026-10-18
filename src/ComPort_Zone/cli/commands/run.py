@@ -245,7 +245,7 @@ def execute_run(
     if outcome.success:
         output.status(
             f"Run complete: {outcome.steps_run} step(s), "
-            f"{outcome.expect_failures} EXPECT failure(s)."
+            f"{outcome.expect_failures} response failure(s) (EXPECT/CAPTURE)."
         )
         return
 

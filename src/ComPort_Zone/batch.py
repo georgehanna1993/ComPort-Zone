@@ -14,8 +14,8 @@ from .serial_core import SerialEvent
 WAIT_PATTERN = re.compile(r"^WAIT\s+(\d+)$", re.IGNORECASE)
 LOOP_PATTERN = re.compile(r"^LOOP\s+(\d+|FOREVER|INFINITE)$", re.IGNORECASE)
 ENDLOOP_PATTERN = re.compile(r"^ENDLOOP$", re.IGNORECASE)
-IF_PATTERN = re.compile(
-    r"^IF\s+(.+?)\s+(NOT\s+CONTAINS|CONTAINS|==|!=|<=|>=|<|>)\s+(.+)$",
+CONDITION_OPERATOR_PATTERN = re.compile(
+    r"NOT\s+CONTAINS|CONTAINS|==|!=|<=|>=|<|>",
     re.IGNORECASE,
 )
 ELSE_PATTERN = re.compile(r"^ELSE$", re.IGNORECASE)
@@ -217,6 +217,36 @@ def _batch_command_lines(text: str) -> list[BatchTemplateStep]:
     return steps
 
 
+def _parse_condition_step(line: str, line_number: int) -> BatchStep:
+    expression = line[2:].strip()
+    quote: str | None = None
+    for index, character in enumerate(expression):
+        if quote is not None:
+            if character == quote:
+                quote = None
+            continue
+        if character in ("'", '"'):
+            quote = character
+            continue
+        if index == 0 or not expression[index - 1].isspace():
+            continue
+        operator_match = CONDITION_OPERATOR_PATTERN.match(expression, index)
+        if operator_match is None:
+            continue
+        operator_end = operator_match.end()
+        if operator_end >= len(expression) or not expression[operator_end].isspace():
+            continue
+        left = expression[:index].strip()
+        right = expression[operator_end:].strip()
+        if left and right:
+            operator = " ".join(operator_match.group(0).upper().split())
+            return BatchStep("if", (left, operator, right), line_number)
+    raise BatchParseError(
+        "IF requires two values and an operator: ==, !=, <, <=, >, >=, CONTAINS, or NOT CONTAINS.",
+        line_number,
+    )
+
+
 def parse_batch_line(line: str, line_number: int) -> BatchStep:
     stripped = line.strip()
     if not stripped:
@@ -251,19 +281,12 @@ def parse_batch_line(line: str, line_number: int) -> BatchStep:
         raise BatchParseError("LOOP requires a positive whole-number count or FOREVER.", line_number)
     if re.match(r"^ENDLOOP\b", stripped, re.IGNORECASE):
         raise BatchParseError("ENDLOOP does not accept an argument.", line_number)
-    if_match = IF_PATTERN.match(stripped)
-    if if_match:
-        left, operator, right = if_match.groups()
-        return BatchStep("if", (left.strip(), " ".join(operator.upper().split()), right.strip()), line_number)
+    if re.match(r"^IF\b", stripped, re.IGNORECASE):
+        return _parse_condition_step(stripped, line_number)
     if ELSE_PATTERN.match(stripped):
         return BatchStep("else", "", line_number)
     if ENDIF_PATTERN.match(stripped):
         return BatchStep("endif", "", line_number)
-    if re.match(r"^IF\b", stripped, re.IGNORECASE):
-        raise BatchParseError(
-            "IF requires two values and an operator: ==, !=, <, <=, >, >=, CONTAINS, or NOT CONTAINS.",
-            line_number,
-        )
     if re.match(r"^ELSE\b", stripped, re.IGNORECASE):
         raise BatchParseError("ELSE does not accept an argument.", line_number)
     if re.match(r"^ENDIF\b", stripped, re.IGNORECASE):
@@ -868,15 +891,15 @@ class BatchRunner:
         runtime_variables: dict[str, str] = {}
         index = 0
         while index < len(steps):
-            step = steps[index]
-            if self._stop_event.is_set():
+            if not self._wait_for_connection():
                 completed = False
                 break
+            step = steps[index]
             try:
                 step = resolve_runtime_step(step, runtime_variables)
             except BatchParseError as exc:
                 self._emit("error", str(exc))
-                if self._step_failed_should_abort(settings):
+                if step.kind == "if" or self._step_failed_should_abort(settings):
                     completed = False
                     break
                 index += 1
@@ -944,10 +967,10 @@ class BatchRunner:
         runtime_variables: dict[str, str] = {}
         index = 0
         while index < len(steps):
-            template_step = steps[index]
-            if self._stop_event.is_set():
+            if not self._wait_for_connection():
                 completed = False
                 break
+            template_step = steps[index]
             try:
                 resolved_line = resolve_line(template_step.line, template_step.line_number)
                 if resolved_line is None:
@@ -967,7 +990,7 @@ class BatchRunner:
                 step = resolve_runtime_step(step, runtime_variables)
             except BatchParseError as exc:
                 self._emit("error", str(exc))
-                if self._step_failed_should_abort(settings):
+                if step.kind == "if" or self._step_failed_should_abort(settings):
                     completed = False
                     break
                 index += 1

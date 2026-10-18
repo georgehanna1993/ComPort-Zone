@@ -164,6 +164,18 @@ class CliOutput:
             tag = "matched" if matched else "no-match"
             suffix = f" after {after} ms" if after is not None else ""
             return self._style(f"[expect:{tag}] {pattern!r}{suffix}", fg="magenta")
+        if kind == "capture":
+            matched = fields.get("matched")
+            name = fields.get("name", "")
+            value = fields.get("value", "")
+            pattern = fields.get("pattern", "")
+            after = fields.get("after_ms")
+            tag = "matched" if matched else "no-match"
+            suffix = f" after {after} ms" if after is not None else ""
+            return self._style(
+                f"[capture:{tag}] {name}={value!r} pattern={pattern!r}{suffix}",
+                fg="magenta",
+            )
         if kind == "status":
             return self._style(str(fields.get("message", "")), fg="cyan")
         if kind == "error":

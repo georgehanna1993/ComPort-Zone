@@ -115,6 +115,28 @@ SEND c
         self.assertEqual(outcome.expect_failures, 2)
         self.assertEqual([text for text, _ in fake.sent_text], ["a", "b", "c"])
 
+    def test_capture_timeout_continues_and_counts_response_failure(self) -> None:
+        fake = FakeSerialTransport()
+        events: list[tuple[str, dict]] = []
+
+        outcome = run_command_file(
+            fake,
+            _steps(
+                "@@on-error continue\n"
+                "CAPTURE VALUE REGEX NEVER\n"
+                "LOG done\n"
+                "SEND after\n"
+            ),
+            {},
+            on_event=lambda kind, fields: events.append((kind, dict(fields))),
+            expect_timeout_ms=5,
+        )
+
+        self.assertTrue(outcome.success)
+        self.assertEqual(outcome.expect_failures, 1)
+        self.assertEqual(fake.sent_text, [("after", None)])
+        self.assertTrue(any(kind == "script" and fields["message"] == "done" for kind, fields in events))
+
 
 class SettingsDirectiveTests(unittest.TestCase):
     def test_send_mode_hex_sends_bare_lines_as_bytes(self) -> None:
@@ -370,6 +392,67 @@ class ConditionStepTests(unittest.TestCase):
         self.assertEqual(outcome.failure_kind, FAILURE_PARSE)
         self.assertEqual(outcome.failure_line, 1)
 
+    def test_quoted_operator_text_selects_only_expected_branches(self) -> None:
+        fake = FakeSerialTransport()
+
+        outcome = run_command_file(
+            fake,
+            _steps(
+                'IF "A > B" == "A > B"\nSEND symbol\nELSE\nSEND wrong-symbol\nENDIF\n'
+                "IF 'X CONTAINS Y' == 'X CONTAINS Y'\nSEND word\nELSE\nSEND wrong-word\nENDIF\n"
+                'IF "ALPHA BETA" CONTAINS "BETA"\nSEND contains\nELSE\nSEND wrong-contains\nENDIF\n'
+                'IF "ALPHA BETA" NOT CONTAINS "GAMMA"\nSEND not-contains\nELSE\nSEND wrong-not-contains\nENDIF\n'
+            ),
+            {},
+            on_event=_no_events_sink,
+        )
+
+        self.assertTrue(outcome.success)
+        self.assertEqual(
+            fake.sent_text,
+            [
+                ("symbol", None),
+                ("word", None),
+                ("contains", None),
+                ("not-contains", None),
+            ],
+        )
+
+    def test_missing_if_variable_is_fatal_even_when_continuing(self) -> None:
+        fake = FakeSerialTransport()
+
+        outcome = run_command_file(
+            fake,
+            _steps(
+                "@@on-error continue\nIF $STATE == READY\nSEND START\nELSE\nSEND STOP\nENDIF\n"
+            ),
+            {},
+            on_event=_no_events_sink,
+        )
+
+        self.assertFalse(outcome.success)
+        self.assertEqual(outcome.failure_kind, FAILURE_PARSE)
+        self.assertEqual(fake.sent_text, [])
+
+    def test_failed_capture_then_missing_if_variable_is_fatal_when_continuing(self) -> None:
+        fake = FakeSerialTransport()
+
+        outcome = run_command_file(
+            fake,
+            _steps(
+                "@@on-error continue\nCAPTURE STATE REGEX READY\n"
+                "IF $STATE == READY\nSEND START\nENDIF\n"
+            ),
+            {},
+            on_event=_no_events_sink,
+            expect_timeout_ms=5,
+        )
+
+        self.assertFalse(outcome.success)
+        self.assertEqual(outcome.failure_kind, FAILURE_PARSE)
+        self.assertEqual(outcome.expect_failures, 1)
+        self.assertEqual(fake.sent_text, [])
+
 
 class CaptureStepTests(unittest.TestCase):
     def test_capture_extracts_response_and_resolves_runtime_variable(self) -> None:
@@ -425,6 +508,7 @@ class CaptureStepTests(unittest.TestCase):
 
         self.assertFalse(outcome.success)
         self.assertEqual(outcome.failure_kind, FAILURE_EXPECT)
+        self.assertEqual(outcome.expect_failures, 1)
 
 
 if __name__ == "__main__":

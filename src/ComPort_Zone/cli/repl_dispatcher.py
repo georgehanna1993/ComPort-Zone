@@ -493,6 +493,10 @@ class ReplDispatcher:
                 self.state.output.event("rx", display=fields.get("data", ""), **fields)
             elif kind == "expect":
                 self.state.output.event("expect", **fields)
+            elif kind == "capture":
+                self.state.output.event("capture", **fields)
+            elif kind == "script":
+                self.state.output.event("script", **fields)
             elif kind == "status":
                 self.state.output.status(fields.get("message", ""))
             elif kind == "error":
@@ -507,7 +511,7 @@ class ReplDispatcher:
         if outcome.success:
             self.state.output.status(
                 f"/run done: {outcome.steps_run} step(s), "
-                f"{outcome.expect_failures} EXPECT failure(s)."
+                f"{outcome.expect_failures} response failure(s) (EXPECT/CAPTURE)."
             )
         else:
             self.state.output.error(

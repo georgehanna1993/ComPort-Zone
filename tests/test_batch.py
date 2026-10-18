@@ -108,6 +108,21 @@ class BatchParserTests(unittest.TestCase):
         with self.assertRaises(ValueError):
             evaluate_condition("FAST", ">", "SLOW")
 
+    def test_condition_parser_ignores_operators_inside_quoted_operands(self) -> None:
+        cases = (
+            ('IF "A > B" == "A > B"', ('"A > B"', "==", '"A > B"')),
+            (
+                "IF 'X CONTAINS Y' == 'X CONTAINS Y'",
+                ("'X CONTAINS Y'", "==", "'X CONTAINS Y'"),
+            ),
+            ('IF "ALPHA CONTAINS BETA" CONTAINS "BETA"', ('"ALPHA CONTAINS BETA"', "CONTAINS", '"BETA"')),
+            ('IF "ALPHA > BETA" NOT CONTAINS "GAMMA"', ('"ALPHA > BETA"', "NOT CONTAINS", '"GAMMA"')),
+        )
+
+        for line, expected in cases:
+            with self.subTest(line=line):
+                self.assertEqual(parse_batch_line(line, 1).payload, expected)
+
     def test_parse_batch_script_rejects_unmatched_condition_markers(self) -> None:
         for script, line_number in (("IF 1 == 1\nSEND ping", 1), ("SEND ping\nELSE", 2), ("ENDIF", 1)):
             with self.assertRaises(BatchParseError) as context:
@@ -445,6 +460,75 @@ class BatchParserTests(unittest.TestCase):
         finally:
             runner.stop(emit_message=False)
 
+    def test_user_pause_blocks_plain_control_steps_until_resume(self) -> None:
+        first_sent = Event()
+        release_first_send = Event()
+        events: list[SerialEvent] = []
+        sent: list[str] = []
+
+        def send_text(text: str, **kw) -> None:
+            sent.append(text)
+            if text == "one":
+                first_sent.set()
+                release_first_send.wait(1)
+
+        runner = BatchRunner(
+            emit_event=events.append,
+            send_text=send_text,
+            send_bytes=lambda data, **kw: None,
+            connected_supplier=lambda: True,
+        )
+        runner.start(parse_batch_script("SEND one\nLOOP 1\nLOG still-running\nENDLOOP\nSEND two"))
+        try:
+            self.assertTrue(first_sent.wait(1))
+            self.assertTrue(runner.pause())
+            release_first_send.set()
+            sleep(0.1)
+            self.assertFalse(any(event.kind == "script" for event in events))
+            self.assertEqual(sent, ["one"])
+
+            self.assertTrue(runner.resume())
+            self.assertTrue(wait_until(lambda: sent == ["one", "two"]))
+            self.assertTrue(any(event.kind == "script" for event in events))
+        finally:
+            runner.stop(emit_message=False)
+
+    def test_user_pause_blocks_template_control_steps_until_resume(self) -> None:
+        first_sent = Event()
+        release_first_send = Event()
+        events: list[SerialEvent] = []
+        sent: list[str] = []
+
+        def send_text(text: str, **kw) -> None:
+            sent.append(text)
+            if text == "one":
+                first_sent.set()
+                release_first_send.wait(1)
+
+        runner = BatchRunner(
+            emit_event=events.append,
+            send_text=send_text,
+            send_bytes=lambda data, **kw: None,
+            connected_supplier=lambda: True,
+        )
+        runner.start_template(
+            parse_batch_template("SEND one\nSET STATE READY\nLOG $STATE\nSEND two"),
+            lambda line, line_number: line,
+        )
+        try:
+            self.assertTrue(first_sent.wait(1))
+            self.assertTrue(runner.pause())
+            release_first_send.set()
+            sleep(0.1)
+            self.assertFalse(any(event.kind == "script" for event in events))
+            self.assertEqual(sent, ["one"])
+
+            self.assertTrue(runner.resume())
+            self.assertTrue(wait_until(lambda: sent == ["one", "two"]))
+            self.assertTrue(any(event.kind == "script" and event.message == "READY" for event in events))
+        finally:
+            runner.stop(emit_message=False)
+
     def test_reconnect_requires_manual_resume(self) -> None:
         output_events: Queue = Queue()
         first_sent = Event()
@@ -484,6 +568,73 @@ class BatchParserTests(unittest.TestCase):
 
             self.assertTrue(runner.resume())
             self.assertTrue(wait_until(lambda: sent == ["one", "two"]))
+        finally:
+            runner.stop(emit_message=False)
+
+    def test_connection_pause_blocks_control_steps_until_manual_resume(self) -> None:
+        first_sent = Event()
+        release_first_send = Event()
+        connected = True
+        events: list[SerialEvent] = []
+
+        def send_text(text: str, **kw) -> None:
+            if text == "one":
+                first_sent.set()
+                release_first_send.wait(1)
+
+        runner = BatchRunner(
+            emit_event=events.append,
+            send_text=send_text,
+            send_bytes=lambda data, **kw: None,
+            connected_supplier=lambda: connected,
+        )
+        runner.start(parse_batch_script("SEND one\nLOG after-reconnect"))
+        try:
+            self.assertTrue(first_sent.wait(1))
+            connected = False
+            runner.notify_connection_state(False)
+            connected = True
+            runner.notify_connection_state(True)
+            release_first_send.set()
+            sleep(0.1)
+            self.assertFalse(any(event.kind == "script" for event in events))
+            self.assertEqual(runner.snapshot().pause_reason, "connection")
+
+            self.assertTrue(runner.resume())
+            self.assertTrue(
+                wait_until(
+                    lambda: any(
+                        event.kind == "script" and event.message == "after-reconnect"
+                        for event in events
+                    )
+                )
+            )
+        finally:
+            runner.stop(emit_message=False)
+
+    def test_stop_works_while_control_only_loop_is_paused(self) -> None:
+        first_log = Event()
+        events: list[SerialEvent] = []
+
+        def emit_event(event: SerialEvent) -> None:
+            events.append(event)
+            if event.kind == "script" and not first_log.is_set():
+                first_log.set()
+                runner.pause(emit_message=False)
+
+        runner = BatchRunner(
+            emit_event=emit_event,
+            send_text=lambda text, **kw: None,
+            send_bytes=lambda data, **kw: None,
+            connected_supplier=lambda: True,
+        )
+        runner.start(parse_batch_script("LOOP FOREVER\nLOG spinning\nENDLOOP"))
+        try:
+            self.assertTrue(first_log.wait(1))
+            self.assertTrue(wait_until(lambda: runner.snapshot().is_paused))
+            runner.stop(emit_message=False)
+            self.assertFalse(runner.is_running)
+            self.assertEqual(sum(event.kind == "script" for event in events), 1)
         finally:
             runner.stop(emit_message=False)
 
@@ -639,6 +790,117 @@ class BatchParserTests(unittest.TestCase):
         )
 
         self.assertEqual(sent, ["high", "right"])
+
+    def test_quoted_condition_operators_select_expected_plain_runner_branches(self) -> None:
+        sent: list[str] = []
+        runner = BatchRunner(
+            emit_event=lambda event: None,
+            send_text=lambda text, **kw: sent.append(text),
+            send_bytes=lambda data, **kw: None,
+            connected_supplier=lambda: True,
+        )
+        runner._resume_event.set()
+
+        runner._run_steps(
+            parse_batch_script(
+                'IF "A > B" == "A > B"\nSEND symbol\nELSE\nSEND wrong-symbol\nENDIF\n'
+                "IF 'X CONTAINS Y' == 'X CONTAINS Y'\nSEND word\nELSE\nSEND wrong-word\nENDIF\n"
+                'IF "ALPHA BETA" CONTAINS "BETA"\nSEND contains\nELSE\nSEND wrong-contains\nENDIF\n'
+                'IF "ALPHA BETA" NOT CONTAINS "GAMMA"\nSEND not-contains\nELSE\nSEND wrong-not-contains\nENDIF'
+            )
+        )
+
+        self.assertEqual(sent, ["symbol", "word", "contains", "not-contains"])
+
+    def test_quoted_condition_operators_select_expected_template_runner_branches(self) -> None:
+        sent: list[str] = []
+        runner = BatchRunner(
+            emit_event=lambda event: None,
+            send_text=lambda text, **kw: sent.append(text),
+            send_bytes=lambda data, **kw: None,
+            connected_supplier=lambda: True,
+        )
+        runner._resume_event.set()
+
+        runner._run_template_steps(
+            parse_batch_template(
+                'IF "A > B" == "A > B"\nSEND symbol\nELSE\nSEND wrong-symbol\nENDIF\n'
+                "IF 'X CONTAINS Y' == 'X CONTAINS Y'\nSEND word\nELSE\nSEND wrong-word\nENDIF\n"
+                'IF "ALPHA BETA" CONTAINS "BETA"\nSEND contains\nELSE\nSEND wrong-contains\nENDIF\n'
+                'IF "ALPHA BETA" NOT CONTAINS "GAMMA"\nSEND not-contains\nELSE\nSEND wrong-not-contains\nENDIF'
+            ),
+            lambda line, line_number: line,
+        )
+
+        self.assertEqual(sent, ["symbol", "word", "contains", "not-contains"])
+
+    def test_missing_if_variable_aborts_plain_runner_even_when_continuing(self) -> None:
+        sent: list[str] = []
+        events: list[SerialEvent] = []
+        runner = BatchRunner(
+            emit_event=events.append,
+            send_text=lambda text, **kw: sent.append(text),
+            send_bytes=lambda data, **kw: None,
+            connected_supplier=lambda: True,
+        )
+        runner._resume_event.set()
+
+        runner._run_steps(
+            parse_batch_script(
+                "@@on-error continue\nIF $STATE == READY\nSEND START\nELSE\nSEND STOP\nENDIF"
+            )
+        )
+
+        self.assertEqual(sent, [])
+        self.assertTrue(any("STATE" in event.message for event in events if event.kind == "error"))
+        self.assertFalse(any(event.message == "Batch run completed." for event in events))
+
+    def test_missing_if_variable_aborts_template_runner_even_when_continuing(self) -> None:
+        sent: list[str] = []
+        events: list[SerialEvent] = []
+        runner = BatchRunner(
+            emit_event=events.append,
+            send_text=lambda text, **kw: sent.append(text),
+            send_bytes=lambda data, **kw: None,
+            connected_supplier=lambda: True,
+        )
+        runner._resume_event.set()
+
+        runner._run_template_steps(
+            parse_batch_template(
+                "@@on-error continue\nIF $STATE == READY\nSEND START\nELSE\nSEND STOP\nENDIF"
+            ),
+            lambda line, line_number: line,
+        )
+
+        self.assertEqual(sent, [])
+        self.assertTrue(any("STATE" in event.message for event in events if event.kind == "error"))
+        self.assertFalse(any(event.message == "Batch run completed." for event in events))
+
+    def test_failed_capture_then_missing_if_variable_aborts_when_continuing(self) -> None:
+        sent: list[str] = []
+        events: list[SerialEvent] = []
+        runner = BatchRunner(
+            emit_event=events.append,
+            send_text=lambda text, **kw: sent.append(text),
+            send_bytes=lambda data, **kw: None,
+            connected_supplier=lambda: True,
+            expect_timeout_ms=1,
+        )
+        runner._rx_event_queue = Queue()
+        runner._resume_event.set()
+
+        runner._run_steps(
+            parse_batch_script(
+                "@@on-error continue\nCAPTURE STATE REGEX READY\n"
+                "IF $STATE == READY\nSEND START\nENDIF"
+            )
+        )
+
+        self.assertEqual(sent, [])
+        error_messages = [event.message for event in events if event.kind == "error"]
+        self.assertTrue(any(message.startswith("CAPTURE timed out") for message in error_messages))
+        self.assertTrue(any("STATE" in message for message in error_messages))
 
     def test_capture_joins_fragmented_rx_and_drives_condition_and_send(self) -> None:
         sent: list[str] = []
