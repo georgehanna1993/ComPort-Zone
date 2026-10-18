@@ -917,6 +917,42 @@ class SparklineSizingRegressionTests(unittest.TestCase):
         grid.deleteLater()
 
 
+class SetpointLayoutRegressionTests(unittest.TestCase):
+    @classmethod
+    def setUpClass(cls) -> None:
+        cls.qt = QApplication.instance() or QApplication([])
+
+    def test_themed_setpoint_editor_keeps_visible_width(self) -> None:
+        # Qt 6.12 can collapse a styled NoButtons spinbox's internal
+        # editor to one pixel, even while the spinbox itself fills the tile.
+        for name, theme in THEMES.items():
+            with self.subTest(theme=name):
+                entry = ControlPanelEntry.from_dict({
+                    "id": "sp",
+                    "label": "Volt (V)",
+                    "tile": {"kind": "setpoint", "span_w": 2},
+                    "setpoint": {"max_value": 1700, "step": 0.001, "decimals": 3},
+                })
+                grid = ControlPanelGridWidget()
+                self.addCleanup(grid.deleteLater)
+                # Use the actual application QSS, inherited from the parent.
+                grid.setStyleSheet(build_stylesheet(theme))
+                grid.set_config(ControlPanelConfig(columns=9, entries=[entry]))
+                grid.show()
+                tile = grid.tile("sp")
+                for width in (1200, 900, 1200):
+                    with self.subTest(width=width):
+                        grid.resize(width, 800)
+                        tile.set_panel_armed(width == 900)
+                        tile.apply_readback(123.456)
+                        self.qt.processEvents()
+                        line = tile.spin.lineEdit()
+                        self.assertGreater(line.width(), tile.spin.width() // 2)
+                        self.assertTrue(tile.spin.rect().contains(line.geometry()))
+                        self.assertEqual(line.text(), "123.456")
+                grid.close()
+
+
 class SetpointSpinboxRegressionTests(unittest.TestCase):
     """Setpoint spinbox needs:
       - selectAll on focus, so typing replaces the value cleanly

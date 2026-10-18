@@ -860,14 +860,22 @@ def build_stylesheet(theme: ThemePalette) -> str:
        surface so the warning reads regardless of ON/OFF. */
     QPushButton#tileControlButton[mismatch="true"] {{ border-color: {amber}; }}
 
-    /* No step buttons (NoButtons) — numeric validation/clamping stays in
-       the widget; tight padding keeps the value close to the border. */
+    /* Numeric validation/clamping stays in the widget; tight padding keeps
+       the value close to the border. */
     QDoubleSpinBox#tileSetpointSpin {{
         background: {field}; color: {tx};
         border: 1px solid {bd_soft}; border-radius: {RADIUS_SM}px;
         padding: 1px 6px; min-height: 18px;
         font-family: {MONO};
     }}
+    /* Keep buttonSymbols enabled for correct editor geometry on Qt 6.12,
+       but give both steppers empty rectangles so they cannot draw or click. */
+    QDoubleSpinBox#tileSetpointSpin::up-button,
+    QDoubleSpinBox#tileSetpointSpin::down-button {{
+        subcontrol-origin: content; width: 0px; height: 0px;
+    }}
+    QDoubleSpinBox#tileSetpointSpin::up-arrow,
+    QDoubleSpinBox#tileSetpointSpin::down-arrow {{ image: none; width: 0px; height: 0px; }}
     QDoubleSpinBox#tileSetpointSpin:focus {{ border-color: {accent}; }}
     QDoubleSpinBox#tileSetpointSpin:disabled {{ color: {tx_faint}; }}
     /* Mismatch: the readback differs from the commanded value (the
