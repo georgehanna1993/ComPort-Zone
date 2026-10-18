@@ -4,6 +4,33 @@ All notable changes to ComPort Zone are documented here.
 
 ## Unreleased
 
+## 0.8.0 - 2026-10-18
+
+### Added
+
+- **Repeat and branch in command files** with nested `LOOP` blocks, `LOOP FOREVER`, `BREAK`, and `IF` / `ELSE` / `ENDIF` conditions. Use numeric comparisons or case-sensitive text checks to choose the next commands from a device's response.
+- **Capture and reuse device replies** with `CAPTURE NAME REGEX pattern`, per-run `$NAME` variables, and `SET`. Write readable progress messages with `LOG`, shown as distinct `MSG` rows in the desktop terminal and included in CLI logs.
+- **A scripting guide and a ready-to-run example**, including desktop and CLI instructions and a local TCP echo-server walkthrough that needs no COM hardware. Fresh installations include the example in the Files drawer.
+
+### Changed
+
+- The editor completes and validates the new script commands, including nested blocks. The desktop, CLI, and interactive CLI support the expanded command-file language.
+- Continued `EXPECT` and `CAPTURE` timeouts stay visible and are counted together in the CLI's response-failure summary.
+
+### Reliability
+
+- Pause and Stop also apply to loops and script-only steps. A connection loss requires a manual Resume after reconnecting.
+- A condition using an undefined runtime variable stops before either branch runs, even with `@@on-error continue`. Quoted condition values can contain operator text such as `A > B`.
+- Settings JSON, Quick Command/File CSV formats, existing transport profiles, and the settings schema remain unchanged. New script commands require v0.8.0 or later; use `SEND` explicitly when a device command begins with a reserved scripting keyword.
+
+### Thanks
+
+- Many thanks to **George Hanna (@georgehanna1993)** for his generous code donation of the command-file scripting features and his work on the follow-up reliability improvements.
+
+### Validation
+
+- All 1,515 automated tests passed. The bundled script also passed through the real CLI against the local TCP echo server with both its normal and alternate reply branches; George's credit was verified in the rendered update popup.
+
 ## 0.7.0 - 2026-08-13
 
 ### Added

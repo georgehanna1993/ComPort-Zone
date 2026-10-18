@@ -104,6 +104,7 @@ class ModelsAndStorageTests(unittest.TestCase):
             EXAMPLE_MEASUREMENT_FILE,
             EXAMPLE_SELF_TEST_FILE,
             EXAMPLE_SETTINGS_FILE,
+            EXAMPLE_SCRIPTING_FILE,
         )
 
         self.assertEqual(
@@ -113,6 +114,7 @@ class ModelsAndStorageTests(unittest.TestCase):
                 "Self-Test (EXPECT)",
                 "Measurement (parameters)",
                 "Settings (@@directives)",
+                "Scripting (loops and capture)",
             ],
         )
         self.assertEqual(
@@ -124,6 +126,7 @@ class ModelsAndStorageTests(unittest.TestCase):
         self.assertTrue(EXAMPLE_SELF_TEST_FILE.exists())
         self.assertTrue(EXAMPLE_MEASUREMENT_FILE.exists())
         self.assertTrue(EXAMPLE_SETTINGS_FILE.exists())
+        self.assertTrue(EXAMPLE_SCRIPTING_FILE.exists())
         self.assertTrue(settings.check_for_updates_on_launch)
 
     def test_settings_store_round_trip(self) -> None:

@@ -306,6 +306,27 @@ message text to console output and `--log` files; color-enabled console output
 uses a distinct italic script-message style. Successful internal directives
 remain silent in normal console output. Capture events are included in CLI logs.
 
+See the [command-file guide](COMMAND_FILES.md) for the full syntax, variable and
+timeout rules, and a complete example. Try the bundled script against the local
+TCP echo server from the repository root:
+
+```powershell
+# Start this server in a separate terminal and leave it running:
+python resources/tcp_echo_server.py
+
+# Validate without opening a connection, then run from another terminal:
+comport-zone validate src/ComPort_Zone/assets/example-scripting.cpz
+comport-zone run src/ComPort_Zone/assets/example-scripting.cpz --host 127.0.0.1 --tcp-port 5025 --line-ending CRLF --param COUNT=3 --non-interactive --log scripting.log
+```
+
+`--expect-timeout MS` applies to both `EXPECT` and `CAPTURE`. By default, either
+response timeout stops the run with exit code `11`. `--continue-on-expect-fail`
+or `@@on-error continue` lets later steps run and reports a combined response
+failure count; an otherwise completed run still exits `0`, so inspect the log
+or structured events when continuing is intentional. An undefined `$NAME` in
+an `IF` is a fatal script error even in continue mode and does not execute either
+branch. The same scripts can run through the REPL's `/run` command.
+
 ### `validate`
 
 Validate a command file without connecting:

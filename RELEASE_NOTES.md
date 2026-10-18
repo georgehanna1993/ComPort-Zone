@@ -1,3 +1,36 @@
+# ComPort Zone v0.8.0 Release Notes
+
+Release date: 2026-10-18
+
+Turn repeated bench checks into scripts that repeat commands, read device replies, and decide what to do next, in the desktop app or the CLI.
+
+**Many thanks to George Hanna ([@georgehanna1993](https://github.com/georgehanna1993)) for his generous code donation of the new scripting features and his work on their reliability. Your contribution brings much more capable device automation to the whole ComPort Zone community!**
+
+## Highlights
+
+- **Repeat a sequence or wait for a device state.** Use nested `LOOP` blocks, `LOOP FOREVER`, and `BREAK` instead of copying commands over and over.
+- **Make decisions from replies.** `CAPTURE` extracts a value from received text; `IF` / `ELSE` compares numbers or text and runs the matching branch.
+- **Reuse values and explain progress.** `SET` and `$NAME` variables hold values for one run. `LOG` adds readable progress messages, with distinct `MSG` styling in the desktop terminal and support in CLI logs.
+- **Learn with a working example.** The new [command-file guide](https://github.com/shuky-shukrun/ComPort-Zone/blob/v0.8.0/docs/COMMAND_FILES.md) explains every command and includes a [scripting example](https://github.com/shuky-shukrun/ComPort-Zone/blob/v0.8.0/src/ComPort_Zone/assets/example-scripting.cpz) you can try against a local TCP echo server without COM hardware. Fresh installations include it in the Files drawer.
+
+## Reliable runs
+
+Pause and Stop apply to loops and script-only steps as well as device traffic. After a disconnect, reconnect and choose Resume to continue. An `IF` using an undefined variable stops before either branch runs. CLI response timeouts remain visible and are counted even when you choose to continue.
+
+## Upgrading
+
+Settings, Quick Commands, Quick Files, and saved Control Panels are preserved; no migration is needed. Existing `SEND`, `WAIT`, `HEX`, `EXPECT`, parameters, and `@@` settings remain available. New scripting commands require v0.8.0 or later. If a bare device command begins with `LOOP`, `IF`, `SET`, `LOG`, or another scripting keyword, prefix it with `SEND` so it is sent to the device. On an existing installation, open the bundled `ComPort_Zone/assets/example-scripting.cpz` file manually or download it from the example link above.
+
+## Downloads
+
+Choose `ComPort_Zone-0.8.0-win64-setup.exe` for installation, or `ComPort_Zone-0.8.0-win64.zip` for portable use. Both run on Windows without installing Python.
+
+## Validation
+
+All 1,515 automated tests passed. The bundled example was also checked through the real CLI against the local TCP echo server, including both reply branches, and the update popup was checked for the contributor credit.
+
+---
+
 # ComPort Zone v0.7.0 Release Notes
 
 Release date: 2026-08-13

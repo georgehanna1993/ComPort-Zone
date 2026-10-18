@@ -43,6 +43,7 @@ EXAMPLE_COMMAND_FILE = _ASSETS_DIR / "example-commands.cpz"
 EXAMPLE_SELF_TEST_FILE = _ASSETS_DIR / "example-self-test.cpz"
 EXAMPLE_MEASUREMENT_FILE = _ASSETS_DIR / "example-measurement.cpz"
 EXAMPLE_SETTINGS_FILE = _ASSETS_DIR / "example-settings.cpz"
+EXAMPLE_SCRIPTING_FILE = _ASSETS_DIR / "example-scripting.cpz"
 SETTINGS_SCHEMA_VERSION = 9
 MINIMUM_COMPATIBLE_SETTINGS_SCHEMA_VERSION = 2
 # Feature floors: a saved payload declares the highest floor of any
@@ -521,12 +522,13 @@ def default_quick_files() -> list[QuickFile]:
     """Quick files seeded on first run — the bundled example command files.
 
     Only the basic example is favourited by default; the richer EXPECT /
-    parameter samples are saved but left for the user to star."""
+    parameter/scripting samples are saved but left for the user to star."""
     return [
         QuickFile(label="Example Commands", path=str(EXAMPLE_COMMAND_FILE), favorite=True),
         QuickFile(label="Self-Test (EXPECT)", path=str(EXAMPLE_SELF_TEST_FILE)),
         QuickFile(label="Measurement (parameters)", path=str(EXAMPLE_MEASUREMENT_FILE)),
         QuickFile(label="Settings (@@directives)", path=str(EXAMPLE_SETTINGS_FILE)),
+        QuickFile(label="Scripting (loops and capture)", path=str(EXAMPLE_SCRIPTING_FILE)),
     ]
 
 

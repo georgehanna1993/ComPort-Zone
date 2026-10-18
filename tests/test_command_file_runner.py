@@ -35,6 +35,41 @@ def _no_events_sink(kind: str, fields: dict) -> None:
 
 
 class RunOutcomeShapeTests(unittest.TestCase):
+    def test_bundled_scripting_example_runs_with_default_and_echo_parameters(self) -> None:
+        from ComPort_Zone.models import EXAMPLE_SCRIPTING_FILE
+
+        script = EXAMPLE_SCRIPTING_FILE.read_text(encoding="utf-8")
+        for message, reply, expected_log in (
+            ("ping", b"PONG\r\n", "Ping passed: PONG"),
+            ("hello", b"ECHO: hello\r\n", "Echo reply: ECHO: hello"),
+        ):
+            with self.subTest(message=message):
+                fake = FakeSerialTransport()
+                events: list[tuple[str, dict]] = []
+                for response in (reply, reply, b"TIME 2026-10-18 12:00:00\r\n", b"PONG\r\n"):
+                    fake.queue_response(response)
+                try:
+                    outcome = run_command_file(
+                        fake,
+                        _steps(script),
+                        {"COUNT": "2", "MESSAGE": message},
+                        on_event=lambda kind, fields: events.append((kind, dict(fields))),
+                    )
+
+                    self.assertTrue(outcome.success, outcome.failure_message)
+                    self.assertEqual(outcome.expect_failures, 0)
+                    self.assertEqual(
+                        [text for text, _ in fake.sent_text],
+                        [message, message, "time", "ping"],
+                    )
+                    logs = [fields["message"] for kind, fields in events if kind == "script"]
+                    self.assertEqual(logs.count(expected_log), 2)
+                    self.assertIn("Server time: 2026-10-18 12:00:00", logs)
+                    self.assertIn("Endpoint ready; leaving the loop", logs)
+                    self.assertEqual(logs[-1], "Scripting tour complete")
+                finally:
+                    fake.channel.stop()
+
     def test_empty_steps_succeed_with_zero_run_count(self) -> None:
         fake = FakeSerialTransport()
         outcome = run_command_file(fake, [], {}, on_event=_no_events_sink)

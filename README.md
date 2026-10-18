@@ -6,7 +6,7 @@
 
 Connect to COM ports and TCP endpoints, watch traffic in a structured terminal, fire off saved commands, and run repeatable command files — in an IDE-style desktop app or a matching headless CLI.
 
-![Version](https://img.shields.io/badge/version-0.7.0-3aa675)
+![Version](https://img.shields.io/badge/version-0.8.0-3aa675)
 ![Platform](https://img.shields.io/badge/platform-Windows-0078D6)
 ![Python](https://img.shields.io/badge/python-3.12%2B-3776AB)
 ![UI](https://img.shields.io/badge/UI-PySide6-41cd52)
@@ -141,6 +141,8 @@ comport-zone
 
 Plain-text command files (run from a terminal tab's **Run** button, the drawer, or `comport-zone run`) send each non-empty line as a command. They also support a small DSL:
 
+Start with the [command-file guide](docs/COMMAND_FILES.md) for step-by-step desktop and CLI instructions, the full command reference, and a [runnable scripting example](src/ComPort_Zone/assets/example-scripting.cpz). The example uses the local TCP echo server, so you can try loops, response capture, variables, conditions, and logging without a device. Fresh installations include **Scripting (loops and capture)** in the Files drawer.
+
 ```text
 # Comment, or // C-style comment
 *IDN?                       // a bare line is sent as-is
@@ -253,6 +255,8 @@ Run `comport-zone` with no arguments (or `gui`) for the desktop app, or a subcom
 
 Global options include `--json`, `--no-color`, `--quiet`, `--verbose`, and `--config PATH`. Serial commands accept shared connection flags (`--port`, `--baud`, `--data-bits`, `--parity`, `--stop-bits`, `--flow-control`, `--line-ending`, `--dtr`, `--rts`, `--auto-reconnect`). Exit codes are stable: `0` OK, `1` error, `2` usage, `10` port busy, `11` EXPECT failed, `12` missing parameter, `13` parse error, `14` port not found, `15` settings error, `130` interrupted.
 
+`CAPTURE` timeouts also use exit code `11`. When you choose to continue after a response timeout, the CLI reports the combined EXPECT/CAPTURE failure count. A missing runtime variable in an `IF` always stops the run before either branch executes.
+
 ## Keyboard shortcuts
 
 | Shortcut | Action | | Shortcut | Action |
@@ -289,6 +293,10 @@ Bump the version, then build the installer and portable zip:
 - Architecture and design notes live in [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md), [`docs/DESIGN.md`](docs/DESIGN.md), and [`docs/LLM_CHANGE_GUIDE.md`](docs/LLM_CHANGE_GUIDE.md).
 - Release history is in [`CHANGELOG.md`](CHANGELOG.md) and [`RELEASE_NOTES.md`](RELEASE_NOTES.md).
 - CI runs the Windows test suite on every push and pull request; tagged commits build and publish the release artifacts.
+
+## Contributors
+
+Many thanks to **[George Hanna (@georgehanna1993)](https://github.com/georgehanna1993)** for his generous code donation bringing loops, conditions, response capture, runtime variables, and script logging to ComPort Zone, and for helping make the new scripting workflows reliable. This contribution makes repeated bench checks and device automation much easier to share and run.
 
 ## Third-party notices
 

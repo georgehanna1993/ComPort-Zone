@@ -1,0 +1,39 @@
+# Scripting tour: loops, capture, variables, conditions, LOG, and BREAK.
+# Many thanks to George Hanna for donating the scripting features.
+# Target: resources/tcp_echo_server.py, not a physical instrument.
+# Start that server, then connect a TCP tab to 127.0.0.1:5025 (CRLF).
+# CLI: comport-zone run <this-file> --host 127.0.0.1 --line-ending CRLF
+# Optional parameters: COUNT=3 and MESSAGE=ping. Try MESSAGE=hello for ELSE.
+
+@@expect-timeout 1000
+@@on-error stop
+SET EXPECTED PONG
+LOG Starting {{COUNT=3}} checks
+
+LOOP {{COUNT=3}}
+    SEND {{MESSAGE=ping}}
+    CAPTURE REPLY REGEX (PONG|ECHO:[^\r\n]*)\r?\n
+    IF $REPLY == $EXPECTED
+        LOG Ping passed: $REPLY
+    ELSE
+        LOG Echo reply: $REPLY
+    ENDIF
+    WAIT 100
+ENDLOOP
+
+SEND time
+CAPTURE SERVER_TIME REGEX TIME ([^\r\n]+)\r?\n
+LOG Server time: $SERVER_TIME
+
+# This loop exits on its first PONG; Stop or Ctrl+C can also end a run.
+LOOP FOREVER
+    SEND ping
+    CAPTURE STATE REGEX (PONG)\r?\n
+    IF $STATE == $EXPECTED
+        LOG Endpoint ready; leaving the loop
+        BREAK
+    ENDIF
+    WAIT 250
+ENDLOOP
+
+LOG Scripting tour complete

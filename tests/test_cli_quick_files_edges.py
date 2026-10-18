@@ -221,6 +221,7 @@ class MalformedCsvTests(unittest.TestCase):
                 "Bring-up",
                 "Example Commands",
                 "Measurement (parameters)",
+                "Scripting (loops and capture)",
                 "Self-Test (EXPECT)",
                 "Settings (@@directives)",
                 "Smoke",
