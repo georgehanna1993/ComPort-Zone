@@ -395,6 +395,39 @@ class SetAndLogStepTests(unittest.TestCase):
         self.assertIn("Selected SAFE MODE", script_messages)
         self.assertFalse(any(str(message).startswith("SET ") for message in status_messages))
 
+    def test_variable_actions_and_pause_match_desktop_runner_semantics(self) -> None:
+        fake = FakeSerialTransport()
+        prompts: list[tuple[str, int]] = []
+
+        outcome = run_command_file(
+            fake,
+            _steps(
+                "SET VOLTAGE 1\nLOOP 2\nPAUSE Check $VOLTAGE volts\n"
+                "SEND volt $VOLTAGE\nVOLTAGE:INCREMENT\nENDLOOP\n"
+            ),
+            {},
+            on_event=_no_events_sink,
+            pause_prompt=lambda message, line: prompts.append((message, line)) or True,
+        )
+
+        self.assertTrue(outcome.success, outcome.failure_message)
+        self.assertEqual(prompts, [("Check 1 volts", 3), ("Check 2 volts", 3)])
+        self.assertEqual(fake.sent_text, [("volt 1", None), ("volt 2", None)])
+
+    def test_pause_without_interactive_prompt_returns_interrupted(self) -> None:
+        fake = FakeSerialTransport()
+
+        outcome = run_command_file(
+            fake,
+            _steps("PAUSE Inspect output\nSEND after\n"),
+            {},
+            on_event=_no_events_sink,
+        )
+
+        self.assertFalse(outcome.success)
+        self.assertEqual(outcome.failure_kind, "interrupted")
+        self.assertEqual(fake.sent_text, [])
+
 
 class ConditionStepTests(unittest.TestCase):
     def test_condition_selects_true_and_false_branches(self) -> None:
