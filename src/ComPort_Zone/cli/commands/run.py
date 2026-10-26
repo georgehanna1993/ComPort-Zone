@@ -227,8 +227,13 @@ def execute_run(
         if non_interactive:
             return False
         detail = f" — {message}" if message else ""
+        prompt = f"PAUSE line {line_number}{detail}. Press Enter to continue..."
         try:
-            input(f"PAUSE line {line_number}{detail}. Press Enter to continue...")
+            if output.json_mode:
+                output.event("prompt", message=prompt, line_number=line_number)
+                input()
+            else:
+                input(prompt)
         except EOFError:
             return False
         return True

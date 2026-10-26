@@ -397,14 +397,16 @@ def run_command_file(
                 try:
                     apply_variable_action(step, runtime_variables)
                 except BatchParseError as exc:
-                    return RunOutcome(
-                        success=False,
-                        failure_kind=FAILURE_PARSE,
-                        failure_line=step.line_number,
-                        failure_message=str(exc),
-                        steps_run=steps_run,
-                        expect_failures=expect_failures,
-                    )
+                    if settings.stop_on_error:
+                        return RunOutcome(
+                            success=False,
+                            failure_kind=FAILURE_PARSE,
+                            failure_line=step.line_number,
+                            failure_message=str(exc),
+                            steps_run=steps_run,
+                            expect_failures=expect_failures,
+                        )
+                    on_event("error", {"message": str(exc)})
                 continue
 
             if step.kind == "pause":

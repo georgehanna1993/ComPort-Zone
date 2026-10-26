@@ -810,6 +810,33 @@ class BatchParserTests(unittest.TestCase):
         runner._run_steps(parse_batch_script("SET mode FAST\nmode:decrement 1"))
         self.assertTrue(any("must be finite numbers" in event.message for event in events if event.kind == "error"))
 
+    def test_variable_action_error_obeys_stop_and_continue_policies(self) -> None:
+        for directive, expected_sent in (
+            ("@@on-error stop", []),
+            ("@@on-error continue", ["after-FAST"]),
+        ):
+            with self.subTest(directive=directive):
+                sent: list[str] = []
+                events: list[SerialEvent] = []
+                runner = BatchRunner(
+                    emit_event=events.append,
+                    send_text=lambda text, **kw: sent.append(text),
+                    send_bytes=lambda data, **kw: None,
+                    connected_supplier=lambda: True,
+                )
+                runner._resume_event.set()
+
+                runner._run_steps(
+                    parse_batch_script(
+                        f"{directive}\nSET mode FAST\nmode:INCREMENT\nSEND after-$mode"
+                    )
+                )
+
+                self.assertEqual(sent, expected_sent)
+                errors = [event.message for event in events if event.kind == "error"]
+                self.assertEqual(len(errors), 1)
+                self.assertIn("must be finite numbers", errors[0])
+
     def test_pause_directive_waits_for_resume_and_resolves_message(self) -> None:
         sent: list[str] = []
         events: list[SerialEvent] = []

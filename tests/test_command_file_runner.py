@@ -428,6 +428,39 @@ class SetAndLogStepTests(unittest.TestCase):
         self.assertEqual(outcome.failure_kind, "interrupted")
         self.assertEqual(fake.sent_text, [])
 
+    def test_variable_action_error_stops_by_default(self) -> None:
+        fake = FakeSerialTransport()
+        events: list[tuple[str, dict]] = []
+
+        outcome = run_command_file(
+            fake,
+            _steps("SET mode FAST\nmode:INCREMENT\nSEND after\n"),
+            {},
+            on_event=lambda kind, fields: events.append((kind, dict(fields))),
+        )
+
+        self.assertFalse(outcome.success)
+        self.assertEqual(outcome.failure_kind, FAILURE_PARSE)
+        self.assertEqual(fake.sent_text, [])
+        self.assertFalse(any(kind == "error" for kind, _ in events))
+
+    def test_variable_action_error_continues_under_directive(self) -> None:
+        fake = FakeSerialTransport()
+        events: list[tuple[str, dict]] = []
+
+        outcome = run_command_file(
+            fake,
+            _steps("@@on-error continue\nSET mode FAST\nmode:INCREMENT\nSEND after-$mode\n"),
+            {},
+            on_event=lambda kind, fields: events.append((kind, dict(fields))),
+        )
+
+        self.assertTrue(outcome.success, outcome.failure_message)
+        self.assertEqual(fake.sent_text, [("after-FAST", None)])
+        errors = [fields["message"] for kind, fields in events if kind == "error"]
+        self.assertEqual(len(errors), 1)
+        self.assertIn("must be finite numbers", errors[0])
+
 
 class ConditionStepTests(unittest.TestCase):
     def test_condition_selects_true_and_false_branches(self) -> None:

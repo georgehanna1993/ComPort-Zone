@@ -81,6 +81,36 @@ class RunCommandFileTests(unittest.TestCase):
         self.assertIn("interactive input was unavailable", result.output)
         self.assertEqual(self.fake.sent_text, [])
 
+    def test_run_pause_json_stdout_remains_ndjson_after_enter(self) -> None:
+        script = _write_file(self.tmp_path, "pause.json.txt", "PAUSE Check output\nSEND after\n")
+        with _patch_run_transport(self.fake):
+            result = self.runner.invoke(
+                cli,
+                ["--json", "run", str(script), "--port", "COM3"],
+                input="\n",
+            )
+
+        self.assertEqual(result.exit_code, 0, msg=result.output)
+        events = [json.loads(line) for line in result.stdout.splitlines() if line.strip()]
+        self.assertTrue(any(event.get("type") == "prompt" for event in events))
+        self.assertTrue(any(event.get("type") == "tx" for event in events))
+        self.assertEqual(self.fake.sent_text, [("after", None)])
+
+    def test_run_pause_json_stdout_remains_ndjson_on_eof(self) -> None:
+        script = _write_file(self.tmp_path, "pause_eof.json.txt", "PAUSE Check output\nSEND never\n")
+        with _patch_run_transport(self.fake):
+            result = self.runner.invoke(
+                cli,
+                ["--json", "run", str(script), "--port", "COM3"],
+                input=None,
+            )
+
+        self.assertEqual(result.exit_code, 130, msg=result.output)
+        events = [json.loads(line) for line in result.stdout.splitlines() if line.strip()]
+        self.assertTrue(any(event.get("type") == "prompt" for event in events))
+        self.assertTrue(any(event.get("message") == "Disconnected." for event in events))
+        self.assertEqual(self.fake.sent_text, [])
+
     def test_run_expect_match_returns_zero(self) -> None:
         # Use queue_response so the RX arrives AFTER the SEND, matching real
         # device behaviour (and surviving the runner's post-send buffer reset).
